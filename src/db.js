@@ -31,10 +31,9 @@ CREATE TABLE IF NOT EXISTS movements (
 CREATE TABLE IF NOT EXISTS pilots (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  grade TEXT NOT NULL,
-  max_loa_m REAL NOT NULL,
-  max_draught_m REAL NOT NULL,
-  areas TEXT NOT NULL,                   -- JSON array of authorised areas
+  grade TEXT NOT NULL,                   -- pilot class; limits come from config.pilotClassLimits
+  trainee INTEGER NOT NULL DEFAULT 0,
+  areas TEXT NOT NULL,                   -- JSON array of authorised areas (sample data)
   active INTEGER NOT NULL DEFAULT 1,
   availability_updated_at TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { tx } from './db.js';
-import { evaluate, classify, movementWindow } from './rules.js';
+import { evaluate, classify, movementWindow, occupiedWindow, classLimits, missingFields } from './rules.js';
 import { can } from './roles.js';
 import { forbidden, notFound, badRequest, conflict, unprocessable } from './errors.js';
 import { parseCsv } from './csv.js';
@@ -58,8 +58,12 @@ function visibleAllocation(user, a, pilotsById) {
   if (!a) return null;
   if (a.status === 'DRAFT' && !can(user, 'allocations:view_draft')) return null;
   const d = decodeAllocation(a);
-  return { ...d, pilot_name: pilotsById.get(a.pilot_id)?.name ?? a.pilot_id };
+  const p = pilotsById.get(a.pilot_id);
+  return { ...d, pilot_name: p?.name ?? a.pilot_id, pilot_trainee: Boolean(p?.trainee) };
 }
+
+const pilotMap = (ctx) => new Map(ctx.db.prepare('SELECT id, name, trainee FROM pilots').all().map((p) => [p.id, p]));
+const shapeMovement = (ctx, m) => ({ ...m, pilot_required: Boolean(m.pilot_required), missing_fields: missingFields(ctx.config, m) });
 
 export function listMovements(ctx, user, { area, from, to, unresolved } = {}) {
   authorise(user, 'movements:view');
@@ -70,7 +74,7 @@ export function listMovements(ctx, user, { area, from, to, unresolved } = {}) {
     WHERE scheduled_start >= ? AND scheduled_start <= ? AND (? IS NULL OR area = ?)
     ORDER BY scheduled_start
   `).all(start, end, area ?? null, area ?? null);
-  const pilots = new Map(ctx.db.prepare('SELECT id, name FROM pilots').all().map((p) => [p.id, p]));
+  const pilots = pilotMap(ctx);
 
   return rows
     .map((m) => {
@@ -79,61 +83,101 @@ export function listMovements(ctx, user, { area, from, to, unresolved } = {}) {
       const allocation = visibleAllocation(user, active, pilots);
       if (status === 'DRAFT' && !allocation) status = 'UNALLOCATED';
       if (status === 'NEEDS_REVIEW' && !can(user, 'allocations:view_draft') && active.status === 'DRAFT') status = 'UNALLOCATED';
-      return { ...m, pilot_required: Boolean(m.pilot_required), allocation_status: status, allocation };
+      return { ...shapeMovement(ctx, m), allocation_status: status, allocation };
     })
     .filter((m) => !unresolved || UNRESOLVED.has(m.allocation_status));
+}
+
+/** Checks for the current pilot of an allocation, against today's data (accepted exceptions excluded). */
+function currentAssessment(ctx, a) {
+  const m = getMovement(ctx, a.movement_id);
+  const p = getPilot(ctx, a.pilot_id);
+  const checks = evaluate(ctx.db, ctx.config, m, p, { excludeAllocationId: a.id, now: ctx.now() });
+  const accepted = new Set(JSON.parse(a.exceptions).map((e) => e.code));
+  return { checks, accepted };
 }
 
 export function getMovementDetail(ctx, user, mid) {
   authorise(user, 'movements:view');
   const m = mustGet(getMovement, ctx, mid, 'Movement');
-  const pilots = new Map(ctx.db.prepare('SELECT id, name FROM pilots').all().map((p) => [p.id, p]));
+  const pilots = pilotMap(ctx);
   const active = activeFor(ctx, mid);
+  const allocation = visibleAllocation(user, active, pilots);
+  if (allocation) {
+    // What currently stands between this allocation and confirmation (or makes a confirmed one unsafe).
+    const { checks, accepted } = currentAssessment(ctx, active);
+    allocation.current_checks = checks.map((c) => ({ ...c, accepted_exception: accepted.has(c.code) }));
+  }
   const out = {
-    movement: { ...m, pilot_required: Boolean(m.pilot_required) },
+    movement: shapeMovement(ctx, m),
     allocation_status: allocationStatus(m, active),
-    allocation: visibleAllocation(user, active, pilots),
+    allocation,
   };
   if (can(user, 'audit:view')) {
     out.allocations = ctx.db.prepare('SELECT * FROM allocations WHERE movement_id = ? ORDER BY created_at')
       .all(mid).map((a) => visibleAllocation(user, a, pilots));
-    out.history = auditFor(ctx, mid);
+    out.history = auditRows(ctx, 'WHERE e.movement_id = ? ORDER BY e.seq', [mid]);
   }
   return out;
 }
 
-function auditFor(ctx, mid) {
-  return ctx.db.prepare('SELECT * FROM audit_events WHERE movement_id = ? ORDER BY seq').all(mid).map((e) => ({
-    ...e,
-    before: e.before_json ? JSON.parse(e.before_json) : null,
-    after: e.after_json ? JSON.parse(e.after_json) : null,
+/** Audit rows with vessel and pilot names resolved for display. Stored rows are never modified. */
+function auditRows(ctx, where, params) {
+  const pilots = pilotMap(ctx);
+  const named = (o) => {
+    if (!o) return o;
+    const out = { ...o };
+    if (o.pilot_id) out.pilot_name = pilots.get(o.pilot_id)?.name ?? o.pilot_id;
+    return out;
+  };
+  return ctx.db.prepare(`
+    SELECT e.*, m.vessel_name, m.external_ref,
+      (SELECT name FROM pilots WHERE id = e.entity_id AND e.entity_type = 'pilot') AS pilot_entity_name
+    FROM audit_events e LEFT JOIN movements m ON m.id = e.movement_id ${where}`).all(...params).map((e) => ({
+    seq: e.seq, at: e.at, actor: e.actor, actor_role: e.actor_role, action: e.action,
+    entity_type: e.entity_type, entity_id: e.entity_id, movement_id: e.movement_id,
+    vessel_name: e.vessel_name, external_ref: e.external_ref, pilot_entity_name: e.pilot_entity_name,
+    reason: e.reason,
+    before: named(e.before_json ? JSON.parse(e.before_json) : null),
+    after: named(e.after_json ? JSON.parse(e.after_json) : null),
     details: e.details_json ? JSON.parse(e.details_json) : null,
-    before_json: undefined, after_json: undefined, details_json: undefined,
   }));
 }
 
 export function listAudit(ctx, user, { movementId } = {}) {
   authorise(user, 'audit:view');
-  if (movementId) return auditFor(ctx, movementId);
-  return ctx.db.prepare('SELECT seq, at, actor, actor_role, action, entity_type, entity_id, movement_id, reason FROM audit_events ORDER BY seq DESC LIMIT 200').all();
+  if (movementId) return auditRows(ctx, 'WHERE e.movement_id = ? ORDER BY e.seq', [movementId]);
+  return auditRows(ctx, 'ORDER BY e.seq DESC LIMIT 200', []);
 }
 
+/** Pilot availability for the timeline. All times are computed here with the same functions the checks use. */
 export function listPilots(ctx, user) {
   authorise(user, 'pilots:view');
-  const from = new Date(ctx.now() - 12 * 3600_000).toISOString();
-  const to = new Date(ctx.now() + 36 * 3600_000).toISOString();
-  return ctx.db.prepare('SELECT * FROM pilots ORDER BY name').all().map((p) => ({
-    ...p,
-    active: Boolean(p.active),
+  const fromMs = ctx.now() - 12 * 3600_000;
+  const toMs = ctx.now() + 36 * 3600_000;
+  const from = new Date(fromMs).toISOString();
+  const to = new Date(toMs).toISOString();
+  const isoOf = (ms) => new Date(ms).toISOString();
+  const pilots = ctx.db.prepare('SELECT * FROM pilots ORDER BY name').all().map((p) => ({
+    id: p.id, name: p.name, grade: p.grade, trainee: Boolean(p.trainee), active: Boolean(p.active),
+    limits: classLimits(ctx.config, p),
     areas: JSON.parse(p.areas),
-    availability_stale: ctx.now() - new Date(p.availability_updated_at).getTime() > ctx.config.staleAvailabilityHours * 3600_000,
+    availability_updated_at: p.availability_updated_at,
+    availability_stale: ctx.now() - new Date(p.availability_updated_at).getTime() > ctx.config.availabilityFreshnessHours * 3600_000,
     availability: ctx.db.prepare('SELECT * FROM availability WHERE pilot_id = ? AND end_at >= ? AND start_at <= ? ORDER BY start_at').all(p.id, from, to),
     assignments: ctx.db.prepare(`
-      SELECT a.id, a.status, a.needs_review, m.id AS movement_id, m.vessel_name, m.scheduled_start, m.duration_minutes
+      SELECT a.id, a.status, a.needs_review, a.comm_status, m.id AS movement_id, m.vessel_name, m.external_ref, m.scheduled_start, m.duration_minutes
       FROM allocations a JOIN movements m ON m.id = a.movement_id
-      WHERE a.pilot_id = ? AND a.status IN ('DRAFT','CONFIRMED') AND m.scheduled_start >= ? AND m.scheduled_start <= ?
-      ORDER BY m.scheduled_start`).all(p.id, from, to),
+      WHERE a.pilot_id = ? AND a.status IN ('DRAFT','CONFIRMED') AND m.status = 'PLANNED'
+      ORDER BY m.scheduled_start`).all(p.id)
+      .map((j) => {
+        const w = movementWindow(j);
+        const o = occupiedWindow(ctx.config, j);
+        return { ...j, needs_review: Boolean(j.needs_review), start: isoOf(w.start), end: isoOf(w.end), occupied_start: isoOf(o.start), occupied_end: isoOf(o.end) };
+      })
+      .filter((j) => j.occupied_end >= from && j.occupied_start <= to),
   }));
+  return { now: isoOf(ctx.now()), from, to, transitAllowanceMinutes: ctx.config.transitAllowanceMinutes, pilots };
 }
 
 export function candidates(ctx, user, mid) {
@@ -142,14 +186,15 @@ export function candidates(ctx, user, mid) {
   const active = activeFor(ctx, mid);
   return ctx.db.prepare('SELECT * FROM pilots ORDER BY name').all().map((p) => {
     const checks = evaluate(ctx.db, ctx.config, m, p, { excludeAllocationId: active?.id, now: ctx.now() });
-    const { blockers, overridable, warnings } = classify(checks, user.role);
+    const { blockers, overridable, holds, warnings } = classify(checks, user.role);
     const blocks = checks.filter((c) => c.severity === 'BLOCK');
     const outcome = blockers.length ? 'BLOCKED'
       : overridable.length ? 'EXCEPTION_REQUIRED'
+      : holds.length ? 'DRAFT_ONLY'
       : warnings.length ? 'WARNING'
-      : 'ELIGIBLE';
+      : 'PASSES';
     return {
-      pilot: { id: p.id, name: p.name, grade: p.grade, max_loa_m: p.max_loa_m, max_draught_m: p.max_draught_m, areas: JSON.parse(p.areas) },
+      pilot: { id: p.id, name: p.name, grade: p.grade, trainee: Boolean(p.trainee), limits: classLimits(ctx.config, p), areas: JSON.parse(p.areas) },
       outcome,
       // Tells an allocator that a supervisor could authorise an exception for this pilot.
       exception_possible_by_other_role: Boolean(blockers.length) && blocks.every((c) => c.overridableBy.length > 0),
@@ -158,7 +203,7 @@ export function candidates(ctx, user, mid) {
     };
   }).sort((a, b) => ORDER[a.outcome] - ORDER[b.outcome] || a.pilot.name.localeCompare(b.pilot.name));
 }
-const ORDER = { ELIGIBLE: 0, WARNING: 1, EXCEPTION_REQUIRED: 2, BLOCKED: 3 };
+const ORDER = { PASSES: 0, WARNING: 1, DRAFT_ONLY: 2, EXCEPTION_REQUIRED: 3, BLOCKED: 4 };
 
 // ---------- writes ----------
 
@@ -187,7 +232,7 @@ function updateVersioned(ctx, table, rowId, expectedVersion, fields) {
 function assess(ctx, user, movement, pilot, { acceptWarnings, overrideReason }, excludeAllocationId) {
   const checks = evaluate(ctx.db, ctx.config, movement, pilot, { excludeAllocationId, now: ctx.now() });
   const { blockers, overridable, warnings } = classify(checks, user.role);
-  if (blockers.length) throw unprocessable('ALLOCATION_BLOCKED', 'Allocation blocked by agreed checks', { checks });
+  if (blockers.length) throw unprocessable('ALLOCATION_BLOCKED', 'Allocation blocked by configured checks', { checks });
   if (overridable.length && !overrideReason?.trim()) {
     throw unprocessable('EXCEPTION_REASON_REQUIRED', 'An authorised exception requires a reason', { checks });
   }
@@ -219,9 +264,18 @@ function insertAllocation(ctx, user, { movementId, pilotId, previousId = null, e
   return getAllocation(ctx, aid);
 }
 
+/** Confirmation re-runs the checks against current data. Holds and unaccepted blockers prevent it. */
 function confirmInternal(ctx, user, a) {
   if (a.status !== 'DRAFT') throw conflict(`Only draft allocations can be confirmed (current: ${a.status})`);
   if (a.needs_review) throw unprocessable('REVIEW_REQUIRED', 'Resolve the review flag before confirming');
+  const { checks, accepted } = currentAssessment(ctx, a);
+  const { blockers, overridable, holds } = classify(checks, user.role, accepted);
+  if (blockers.length || overridable.length) {
+    throw unprocessable('ALLOCATION_BLOCKED', `Cannot confirm: ${[...blockers, ...overridable].map((c) => c.message).join('; ')}`, { checks });
+  }
+  if (holds.length) {
+    throw unprocessable('CONFIRMATION_HELD', `Cannot confirm yet: ${holds.map((c) => c.message).join(' ')}`, { checks });
+  }
   const updated = updateVersioned(ctx, 'allocations', a.id, a.version, {
     status: 'CONFIRMED', confirmed_at: iso(ctx), confirmed_by: user.id,
   });
@@ -301,13 +355,14 @@ export function markReviewed(ctx, user, { allocationId, version, note }) {
   return tx(ctx.db, () => {
     const a = mustGet(getAllocation, ctx, allocationId, 'Allocation');
     if (!a.needs_review) throw conflict('Allocation is not flagged for review');
-    const m = getMovement(ctx, a.movement_id);
-    const p = getPilot(ctx, a.pilot_id);
-    const checks = evaluate(ctx.db, ctx.config, m, p, { excludeAllocationId: a.id, now: ctx.now() });
-    const accepted = new Set(JSON.parse(a.exceptions).map((e) => e.code));
-    const { blockers } = classify(checks.filter((c) => !accepted.has(c.code)), user.role);
-    if (blockers.length) {
-      throw unprocessable('ALLOCATION_BLOCKED', 'Assignment no longer passes agreed checks — reallocate or cancel', { checks });
+    const { checks, accepted } = currentAssessment(ctx, a);
+    const { blockers, overridable, holds } = classify(checks, user.role, accepted);
+    if (blockers.length || overridable.length) {
+      throw unprocessable('ALLOCATION_BLOCKED',
+        `This pilot no longer passes configured checks (${[...blockers, ...overridable].map((c) => c.message).join('; ')}). Reallocate or cancel.`, { checks });
+    }
+    if (a.status === 'CONFIRMED' && holds.length) {
+      throw unprocessable('CONFIRMATION_HELD', `A confirmed allocation cannot stand while: ${holds.map((c) => c.message).join(' ')}`, { checks });
     }
     const updated = updateVersioned(ctx, 'allocations', a.id, version, { needs_review: 0, review_reasons: '[]' });
     audit(ctx, user, { action: 'ALLOCATION_REVIEWED', entityType: 'allocation', entityId: a.id, movementId: a.movement_id,
@@ -323,6 +378,8 @@ export function setCommStatus(ctx, user, { allocationId, version, status }) {
   return tx(ctx.db, () => {
     const a = mustGet(getAllocation, ctx, allocationId, 'Allocation');
     if (a.status !== 'CONFIRMED') throw conflict('Only confirmed allocations can be communicated');
+    if (status === 'SENT' && a.comm_status !== 'NOT_SENT') throw conflict('Notification already recorded as sent');
+    if (status !== 'SENT' && a.comm_status !== 'SENT') throw conflict('Record the notification as sent before recording a response');
     const updated = updateVersioned(ctx, 'allocations', a.id, version, { comm_status: status });
     audit(ctx, user, { action: 'COMMUNICATION_STATUS', entityType: 'allocation', entityId: a.id, movementId: a.movement_id,
       before: { comm_status: a.comm_status }, after: { comm_status: status } });
@@ -340,9 +397,14 @@ function flag(ctx, user, a, reasons) {
     after: { needs_review: true }, details: { reasons } });
 }
 
+const FIELD_LABEL = { scheduled_start: 'Scheduled start', duration_minutes: 'Duration', loa_m: 'LOA', draught_m: 'Draught',
+  status: 'Movement status', from_location: 'From', to_location: 'To', pilot_required: 'Pilot required' };
+
 function fmt(field, v) {
-  if (v == null) return '—';
-  if (field === 'scheduled_start') return `${v.slice(0, 16).replace('T', ' ')}Z`;
+  if (v == null) return 'missing';
+  if (field === 'scheduled_start') return `${v.slice(8, 10)}/${v.slice(5, 7)} ${v.slice(11, 16)} UTC`;
+  if (field === 'loa_m' || field === 'draught_m') return `${v} m`;
+  if (field === 'duration_minutes') return `${v} min`;
   return String(v);
 }
 
@@ -371,8 +433,9 @@ function applyMovementChange(ctx, user, m, version, changes) {
 
   const active = activeFor(ctx, m.id);
   if (active) {
-    const reasons = Object.keys(diff).map((k) => `Movement ${k.replace('_', ' ')} changed: ${fmt(k, m[k])} → ${fmt(k, diff[k])}`);
-    flag(ctx, user, active, reasons);
+    // Record what changed AND what that change now breaks for the assigned pilot.
+    const reasons = Object.keys(diff).map((k) => `${FIELD_LABEL[k] ?? k} changed: ${fmt(k, m[k])} → ${fmt(k, diff[k])}`);
+    flag(ctx, user, active, [...reasons, ...failingChecks(ctx, active).map((c) => c.message)]);
   }
   // A time/duration change can also clash with this pilot's other jobs, or another pilot's.
   if ('scheduled_start' in diff || 'duration_minutes' in diff) reevaluateOverlapping(ctx, user, updated, active?.id);
@@ -382,7 +445,7 @@ function applyMovementChange(ctx, user, m, version, changes) {
 /** Re-check other active allocations whose movement is near this one in time. */
 function reevaluateOverlapping(ctx, user, movement, skipId) {
   const w = movementWindow(movement);
-  const pad = (ctx.config.minRestMinutes + 24 * 60) * 60_000;
+  const pad = (ctx.config.minIntervalBetweenAssignmentsMinutes + 24 * 60) * 60_000;
   const rows = ctx.db.prepare(`
     SELECT a.* FROM allocations a JOIN movements m ON m.id = a.movement_id
     WHERE a.status IN ('DRAFT','CONFIRMED') AND a.needs_review = 0 AND (? IS NULL OR a.id != ?)
@@ -391,12 +454,15 @@ function reevaluateOverlapping(ctx, user, movement, skipId) {
   for (const a of rows) flagIfFailing(ctx, user, a);
 }
 
+/** Checks the allocation's pilot now fails: blocking conditions, plus confirmation holds on a confirmed allocation. */
+function failingChecks(ctx, a) {
+  const { checks, accepted } = currentAssessment(ctx, a);
+  return checks.filter((c) => !accepted.has(c.code) && c.code !== 'MOVEMENT_NOT_PILOTABLE'
+    && (c.severity === 'BLOCK' || (c.severity === 'CONFIRM_HOLD' && a.status === 'CONFIRMED')));
+}
+
 function flagIfFailing(ctx, user, a) {
-  const m = getMovement(ctx, a.movement_id);
-  const p = getPilot(ctx, a.pilot_id);
-  const accepted = new Set(JSON.parse(a.exceptions).map((e) => e.code));
-  const failing = evaluate(ctx.db, ctx.config, m, p, { excludeAllocationId: a.id, now: ctx.now() })
-    .filter((c) => c.severity === 'BLOCK' && !accepted.has(c.code) && c.code !== 'MOVEMENT_NOT_PILOTABLE');
+  const failing = failingChecks(ctx, a);
   if (failing.length) flag(ctx, user, a, failing.map((c) => c.message));
   return failing.length > 0;
 }

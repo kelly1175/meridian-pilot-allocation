@@ -15,24 +15,27 @@ export function seed(db, now = Date.now()) {
   const insUser = db.prepare('INSERT INTO users (id, name, role) VALUES (?, ?, ?)');
   users.forEach((u) => insUser.run(...u));
 
-  // id, name, grade, max LOA, max draught, areas, availability updated (hours ago)
+  // ---- SAMPLE PILOTS (fictional) ----
+  // Class limits (LOA / draught) are configured per class in src/config/rules.json → pilotClassLimits.
+  // AREA AUTHORISATIONS below are illustrative sample data, not real authorisations.
+  // id, name, class, trainee, authorised areas, availability last updated (hours ago)
   const pilots = [
-    ['P01', 'Pilot Ashworth', 'Class 1', 400, 16.0, ['INNER', 'OUTER'], 2],
-    ['P02', 'Pilot Bevan', 'Class 1', 400, 16.0, ['INNER', 'OUTER'], 3],
-    ['P03', 'Pilot Carrick', 'Class 2', 250, 12.0, ['INNER', 'OUTER'], 1],
-    ['P04', 'Pilot Dunmore', 'Class 2', 250, 12.0, ['INNER'], 30],   // stale availability
-    ['P05', 'Pilot Ellery', 'Class 3', 180, 9.5, ['INNER'], 4],
-    ['P06', 'Pilot Fenwick', 'Class 3', 180, 9.5, ['INNER', 'OUTER'], 5],
-    ['P07', 'Pilot Garside', 'Class 1', 400, 16.0, ['OUTER'], 2],
-    ['P08', 'Pilot Holt (trainee)', 'Class 4', 120, 7.0, ['INNER'], 6],
+    ['P01', 'Pilot Ashworth', 'Class 1', false, ['INNER', 'OUTER'], 2],
+    ['P02', 'Pilot Bevan', 'Class 1', false, ['INNER', 'OUTER'], 3],
+    ['P03', 'Pilot Carrick', 'Class 2', false, ['INNER', 'OUTER'], 1],
+    ['P04', 'Pilot Dunmore', 'Class 2', false, ['INNER'], 30],   // availability older than freshness threshold
+    ['P05', 'Pilot Ellery', 'Class 3', false, ['INNER'], 4],
+    ['P06', 'Pilot Fenwick', 'Class 3', false, ['INNER', 'OUTER'], 5],
+    ['P07', 'Pilot Garside', 'Class 1', false, ['OUTER'], 2],
+    ['P08', 'Pilot Holt', 'Class 4', true, ['INNER'], 6],        // trainee: supervision requirements not defined
   ];
-  const insPilot = db.prepare(`INSERT INTO pilots (id, name, grade, max_loa_m, max_draught_m, areas, availability_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const insPilot = db.prepare(`INSERT INTO pilots (id, name, grade, trainee, areas, availability_updated_at) VALUES (?, ?, ?, ?, ?, ?)`);
   const insAv = db.prepare('INSERT INTO availability (id, pilot_id, kind, start_at, end_at, note) VALUES (?, ?, ?, ?, ?, ?)');
   let av = 0;
-  for (const [pid, name, grade, loa, dr, areas, staleH] of pilots) {
-    insPilot.run(pid, name, grade, loa, dr, JSON.stringify(areas), at(-staleH));
-    // Two 12h shift patterns relative to now (A: -4h→+8h, B: +6h→+18h), repeated daily.
-    // Leaves a cover gap at +18h→+20h so the board always shows an exception scenario.
+  for (const [pid, name, grade, trainee, areas, staleH] of pilots) {
+    insPilot.run(pid, name, grade, trainee ? 1 : 0, JSON.stringify(areas), at(-staleH));
+    // SAMPLE DUTY PERIODS: two 12h shift patterns relative to now (A: -4h→+8h, B: +6h→+18h), repeated daily.
+    // Leaves a cover gap at +18h→+20h so the board always shows a duty-period exception scenario.
     const shiftA = ['P01', 'P03', 'P05', 'P07'].includes(pid);
     for (const d of [-1, 0, 1, 2]) {
       const s = d * 24 + (shiftA ? -4 : 6);
@@ -47,8 +50,8 @@ export function seed(db, now = Date.now()) {
     ['CAPE HALLORAN', 'DEPARTURE', 'Berth 7', 'Fairway Buoy', 'INNER', 4, 183, 9.1],
     ['MV ORLA GRACE', 'ARRIVAL', 'Fairway Buoy', 'Berth 2', 'INNER', 5.5, 142, 7.4],
     ['STELLA MARIS II', 'SHIFT', 'Berth 3', 'Berth 9', 'INNER', 7, 98, 5.2],
-    ['ATLANTIC FORTUNE', 'ARRIVAL', 'Pilot Station', 'Oil Jetty 1', 'OUTER', 9, 333, 15.4],
-    ['KESTREL BAY', 'DEPARTURE', 'Berth 5', 'Fairway Buoy', 'INNER', 11, 166, null],     // missing draught
+    ['ATLANTIC FORTUNE', 'ARRIVAL', 'Pilot Station', 'Oil Jetty 1', 'OUTER', 9, 333, 15.4],  // DEMO: walkthrough movement
+    ['KESTREL BAY', 'DEPARTURE', 'Berth 5', 'Fairway Buoy', 'INNER', 11, 166, null],     // DEMO: draught missing
     ['HANSA LIGHT', 'ARRIVAL', 'Fairway Buoy', 'Berth 6', 'INNER', 13, 120, 6.8],
     ['POLAR VENTURE', 'DEPARTURE', 'Oil Jetty 1', 'Pilot Station', 'OUTER', 15, 274, 13.9],
     ['MARIA KONSTANTIN', 'ARRIVAL', 'Fairway Buoy', 'Berth 1', 'INNER', 17, 199, 10.6],
@@ -71,17 +74,21 @@ export function seed(db, now = Date.now()) {
   const insAlloc = db.prepare(`
     INSERT INTO allocations (id, movement_id, pilot_id, status, created_by, created_at, confirmed_at, confirmed_by, comm_status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const insAudit = db.prepare(`INSERT INTO audit_events (at, actor, actor_role, action, entity_type, entity_id, movement_id, after_json)
-    VALUES (?, ?, ?, ?, 'allocation', ?, ?, ?)`);
+  const insAudit = db.prepare(`INSERT INTO audit_events (at, actor, actor_role, action, entity_type, entity_id, movement_id, before_json, after_json)
+    VALUES (?, 'alex', 'ALLOCATOR', ?, 'allocation', ?, ?, ?, ?)`);
+  // id, movement, pilot, status, communication status, created (hours from now)
   const pre = [
     ['ALC-SEED0001', 'MOV-013', 'P05', 'CONFIRMED', 'ACKNOWLEDGED', -10],
     ['ALC-SEED0002', 'MOV-002', 'P03', 'CONFIRMED', 'SENT', -6],
     ['ALC-SEED0003', 'MOV-003', 'P05', 'DRAFT', 'NOT_SENT', -2],
+    ['ALC-SEED0004', 'MOV-004', 'P08', 'DRAFT', 'NOT_SENT', -1],   // trainee scenario: cannot be confirmed
   ];
   for (const [aid, mid, pid, status, comm, h] of pre) {
     const confirmed = status === 'CONFIRMED';
     insAlloc.run(aid, mid, pid, status, 'alex', at(h), confirmed ? at(h + 0.5) : null, confirmed ? 'alex' : null, comm);
-    insAudit.run(at(h), 'alex', 'ALLOCATOR', 'ALLOCATION_CREATED', aid, mid, JSON.stringify({ pilot_id: pid, status: 'DRAFT' }));
-    if (confirmed) insAudit.run(at(h + 0.5), 'alex', 'ALLOCATOR', 'ALLOCATION_CONFIRMED', aid, mid, JSON.stringify({ status: 'CONFIRMED' }));
+    insAudit.run(at(h), 'ALLOCATION_CREATED', aid, mid, null, JSON.stringify({ pilot_id: pid, status: 'DRAFT' }));
+    if (confirmed) insAudit.run(at(h + 0.5), 'ALLOCATION_CONFIRMED', aid, mid, JSON.stringify({ status: 'DRAFT' }), JSON.stringify({ status: 'CONFIRMED', pilot_id: pid }));
+    if (comm !== 'NOT_SENT') insAudit.run(at(h + 0.6), 'COMMUNICATION_STATUS', aid, mid, JSON.stringify({ comm_status: 'NOT_SENT' }), JSON.stringify({ comm_status: 'SENT' }));
+    if (comm === 'ACKNOWLEDGED') insAudit.run(at(h + 0.8), 'COMMUNICATION_STATUS', aid, mid, JSON.stringify({ comm_status: 'SENT' }), JSON.stringify({ comm_status: 'ACKNOWLEDGED' }));
   }
 }

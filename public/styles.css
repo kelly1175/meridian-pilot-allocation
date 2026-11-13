@@ -34,8 +34,61 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .badge.proto { background: var(--warn-bg); color: var(--warn); }
 .s-UNALLOCATED, .o-BLOCKED { background: var(--bad-bg); color: var(--bad); }
 .s-DRAFT, .o-WARNING, .s-SENT { background: var(--info-bg); color: var(--info); }
-.s-NEEDS_REVIEW, .o-EXCEPTION_REQUIRED, .s-DECLINED { background: var(--warn-bg); color: var(--warn); }
-.s-CONFIRMED, .o-ELIGIBLE, .s-ACKNOWLEDGED { background: var(--ok-bg); color: var(--ok); }
+.s-NEEDS_REVIEW, .o-EXCEPTION_REQUIRED, .s-DECLINED, .s-AWAITING { background: var(--warn-bg); color: var(--warn); }
+.s-CONFIRMED, .o-PASSES, .s-ACKNOWLEDGED { background: var(--ok-bg); color: var(--ok); }
+.o-DRAFT_ONLY, .s-NOT_SENT { background: transparent; color: var(--warn); box-shadow: inset 0 0 0 1.5px currentColor; }
+.s-DRAFT { box-shadow: inset 0 0 0 1.5px currentColor; background: transparent; }
+.s-NEEDS_REVIEW::before { content: "⚠ "; }
+.badge.trainee { background: var(--warn-bg); color: var(--warn); box-shadow: inset 0 0 0 1.5px currentColor; letter-spacing: .04em; }
+.badge.missing { background: var(--warn-bg); color: var(--warn); }
+.badge.missing::before { content: "⚠ "; }
+.badge.sample { background: var(--neutral-bg); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+
+.rules-notice { margin: 0; padding: 6px 16px; font-size: 12.5px; color: var(--muted); background: var(--neutral-bg); border-bottom: 1px solid var(--line); }
+.rules-notice::before { content: "ⓘ "; color: var(--warn); }
+.help { font-size: 12.5px; color: var(--muted); margin: -2px 0 8px; }
+.assumption { font-size: 12px; font-style: italic; color: var(--muted); }
+.sev { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-right: 4px; }
+.cand li.CONFIRM_HOLD { color: var(--warn); }
+.callout.hold { background: transparent; color: var(--warn); box-shadow: inset 0 0 0 1.5px var(--warn); }
+.callout.info { background: var(--info-bg); color: var(--info); }
+.state-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: center; margin-top: 8px; font-size: 13px; }
+.state-grid dt { color: var(--muted); }
+.state-grid dd { margin: 0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.shift-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Pilot availability timeline */
+.tl-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); align-items: center; margin-bottom: 8px; }
+.tl-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 26px; height: 12px; border-radius: 3px; }
+.tl-table td.tl-cell, .tl-table th.tl-cell { padding-left: 4px; padding-right: 18px; }
+.tl-axis { position: relative; height: 38px; }
+.tl-axis .tick { position: absolute; top: 18px; bottom: 0; border-left: 1px solid var(--line); font: 11px ui-monospace, monospace; color: var(--muted); padding-left: 3px; white-space: nowrap; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.tl-axis .day { position: absolute; top: 0; font: 600 11px system-ui, sans-serif; color: var(--ink); border-left: 2px solid var(--ink); padding-left: 4px; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+.tl-axis .nowlabel { position: absolute; top: 0; transform: translateX(-50%); background: var(--ink); color: var(--panel); font: 600 10.5px system-ui; padding: 1px 5px; border-radius: 3px; white-space: nowrap; z-index: 2; text-transform: none; letter-spacing: 0; }
+.tl-track { position: relative; height: 46px; background: var(--neutral-bg); border-radius: 4px; overflow: hidden; }
+.tl-track .grid { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); opacity: .7; }
+.tl-track .grid.midnight { border-left: 2px solid var(--muted); opacity: 1; }
+.tl-track .duty { position: absolute; top: 0; height: 12px; font-size: 10px; line-height: 12px; padding-left: 3px; white-space: nowrap; overflow: hidden; }
+.tl-track .ON_DUTY { background: var(--ok-bg); color: var(--ok); border-bottom: 2px solid var(--ok); }
+.tl-track .UNAVAILABLE { height: 100%; display: flex; align-items: flex-end; padding-bottom: 2px; color: var(--bad); border: 1.5px solid var(--bad); background: repeating-linear-gradient(135deg, var(--bad-bg) 0 5px, transparent 5px 10px); font-weight: 600; z-index: 1; }
+.tl-track .buffer { position: absolute; top: 17px; height: 24px; border-radius: 3px; background: repeating-linear-gradient(90deg, var(--muted) 0 1px, transparent 1px 4px); opacity: .45; }
+.tl-track .job { position: absolute; top: 17px; height: 24px; border-radius: 3px; font: 600 10.5px system-ui; line-height: 20px; padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: pointer; border: 2px solid var(--accent); z-index: 2; }
+.tl-track .job.CONFIRMED { background: var(--accent); color: var(--accent-ink); }
+.tl-track .job.DRAFT { background: var(--panel); color: var(--accent); border-style: dashed; }
+.tl-track .job.review { background: var(--warn-bg); color: var(--warn); border: 2px dashed var(--warn); }
+.tl-track .nowline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); z-index: 3; }
+.tl-jobs { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; display: grid; gap: 2px; }
+.tl-jobs li { font-variant-numeric: tabular-nums; }
+
+/* Readable audit */
+.audit-list { list-style: none; margin: 0; padding: 0; }
+.audit-list > li { padding: 10px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 3px; }
+.audit-list .head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.audit-list .ev { font-weight: 600; }
+.audit-list .change { font-size: 13px; }
+.audit-list .change ul { margin: 2px 0 0; padding-left: 18px; }
+.audit-list pre { font-size: 11px; background: var(--neutral-bg); padding: 8px; border-radius: 6px; overflow-x: auto; margin: 4px 0 0; }
 
 main { padding: 12px 16px; }
 .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }

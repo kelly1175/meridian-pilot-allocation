@@ -15,8 +15,9 @@ The prototype makes an explicit, reversible assumption for each decision below s
 | D-09 | Metric definitions, baseline, targets, owners | Time to allocate = movement first seen → first confirmation. Adoption = confirmed in Meridian ÷ eligible | `service.js` `metrics` | PO — TBC | During discovery |
 | D-10 | Technology and hosting | Zero-dependency Node + SQLite for the prototype only | ADR-0001 | Architect — TBC | Architecture review |
 | D-11 | Service hours, SLOs, recovery objectives and fallback | None set | — | Ops + engineering + SRE — TBC | Before release planning |
-| D-12 | Handling missing, outdated or conflicting information | Missing LOA/draught = warning. Availability older than 24h = warning | `rules.json` | Allocation rule authority — TBC | Before build of checks |
+| D-12 | Handling missing, outdated or conflicting information | Missing LOA/draught: draft allowed, confirmation prevented. Availability older than 24h = warning | `rules.json` | Allocation rule authority — TBC | Before build of checks |
 | D-13 | Audit retention period and access | Kept indefinitely, append-only | `db.js` | Data owner / security — TBC | Before release |
+| D-15 | Trainee pilot supervision requirements | Not modelled. Trainee assignments can be drafted, never confirmed, and no role can override | `rules.json` → `trainee` | Marine operations — TBC | Before build of checks |
 | D-14 | Time window and board horizon | 2h back, 24h forward by default | `rules.json.boardWindowHours` | Allocators — TBC | Discovery sessions |
 
 ## Delivery note
