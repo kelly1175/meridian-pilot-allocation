@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meridian · Pilot Allocation</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◈</span>
+      <span><strong>Meridian</strong> · Pilot Allocation</span>
+      <span class="badge proto" title="Discovery prototype with fictional sample data. Rules are proposed placeholders.">Prototype · sample data</span>
+    </div>
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+    <label class="user">
+      <span class="sr">Signed in as</span>
+      <select id="user"></select>
+    </label>
+  </header>
+
+  <main>
+    <section id="view-board" class="view">
+      <div class="toolbar">
+        <label>Area
+          <select id="f-area"><option value="">All</option><option>INNER</option><option>OUTER</option></select>
+        </label>
+        <label>Window
+          <select id="f-window"><option value="12">Next 12h</option><option value="24" selected>Next 24h</option><option value="48">Next 48h</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="f-unresolved"> Unresolved only</label>
+        <div class="summary" id="summary"></div>
+        <span class="muted small" id="refreshed"></span>
+      </div>
+      <div class="split">
+        <div class="board-wrap">
+          <table class="board" id="board">
+            <thead><tr>
+              <th>Time (UTC)</th><th>Vessel</th><th>Move</th><th>Route</th><th>Area</th><th>LOA / Draught</th><th>Status</th><th>Pilot</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <aside class="detail" id="detail"><p class="muted pad">Select a movement to view allocation details.</p></aside>
+      </div>
+    </section>
+
+    <section id="view-pilots" class="view" hidden></section>
+    <section id="view-import" class="view" hidden></section>
+    <section id="view-metrics" class="view" hidden></section>
+    <section id="view-audit" class="view" hidden></section>
+  </main>
+
+  <dialog id="dlg"><form method="dialog" id="dlg-form"></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
