@@ -4,6 +4,8 @@ First Meridian component: a shared workspace where authorised marine operations 
 
 > **Status: discovery prototype.** Built to validate the workflow with allocators using realistic scenarios before delivery scope is agreed. All allocation rules, roles and thresholds are **proposed placeholders** (see [open decisions](docs/open-decisions.md)). Sample data is fictional. Technology and hosting choices remain subject to architecture review ([ADR-0001](docs/adr/0001-discovery-prototype-stack.md)).
 
+![Movement board with candidate pilots](docs/screenshot-board.png)
+
 ## Quick start
 
 Requires Node.js 22.13 or later. No dependencies to install.
