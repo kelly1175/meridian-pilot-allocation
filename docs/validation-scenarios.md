@@ -48,7 +48,7 @@ For each scenario, record: completed (yes/no), time taken, hesitation points, ru
 
 ## S5 Authorised exception
 
-1. Alex: open a movement where a pilot shows **Exception needed** (outside duty). The Assign button is available but the server refuses an allocator.
+1. Alex: open a movement where a pilot shows **Blocked** with "(exception: supervisor)". Alex can't assign them.
 2. Sam: assign the same pilot with an exception reason.
 
 **Expect:** the exception and reason are shown on the allocation and counted in Metrics.
