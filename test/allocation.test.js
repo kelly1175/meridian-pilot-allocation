@@ -43,7 +43,7 @@ describe('AC2 pilot information', () => {
     const codes = dunmore.checks.map((c) => c.code);
     assert.ok(codes.includes('MOVEMENT_DATA_MISSING'));
     assert.ok(codes.includes('AVAILABILITY_STALE'));
-    assert.equal(dunmore.outcome, 'WARNING');
+    assert.equal(dunmore.outcome, 'DRAFT_ONLY');
   });
 });
 
@@ -64,6 +64,7 @@ describe('AC3 allocation with agreed checks', () => {
     assert.equal(code(() => svc.createAllocation(ctx, u('alex'), args)), 'WARNINGS_NOT_ACCEPTED');
     const a = svc.createAllocation(ctx, u('alex'), { ...args, acceptWarnings: true });
     assert.ok(a.warnings.some((w) => w.code === 'AVAILABILITY_STALE'));
+    assert.equal(a.status, 'DRAFT');
   });
 
   test('authorised exception: allocator blocked, supervisor needs a reason', () => {
@@ -82,7 +83,7 @@ describe('AC4 change handling', () => {
     svc.updateMovement(ctx, u('sam'), { movementId: 'MOV-003', version: m.version, changes: { scheduled_start: '2026-11-13T14:00:00Z' } });
     const a = alloc('ALC-SEED0003');
     assert.equal(a.needs_review, 1);
-    assert.match(a.review_reasons, /scheduled start changed/);
+    assert.match(a.review_reasons, /Scheduled start changed/);
     assert.equal(code(() => svc.confirmAllocation(ctx, u('alex'), { allocationId: a.id, version: a.version })), 'REVIEW_REQUIRED');
     svc.markReviewed(ctx, u('alex'), { allocationId: a.id, version: a.version, note: 'Still suitable' });
     const after = alloc(a.id);
@@ -203,5 +204,121 @@ describe('Tactical CSV import', () => {
     assert.equal(r.rejected.length, 1);
     assert.ok(r.notInFile.some((m) => m.external_ref === 'VTS-24003'));
     assert.equal(alloc('ALC-SEED0002').needs_review, 1);
+  });
+});
+
+describe('Illustrative rules come from config', () => {
+  test('class limits, transit allowance and interval are read from rules.json', () => {
+    const cfg = structuredClone(ctx.config);
+    cfg.pilotClassLimits['Class 3'].maxLoaM = 90; // tighten Ellery's class
+    const strict = { ...ctx, config: cfg };
+    const ellery = svc.candidates(strict, u('alex'), 'MOV-004').find((c) => c.pilot.id === 'P05');
+    assert.ok(ellery.checks.some((c) => c.code === 'LOA_EXCEEDS_LIMIT' && /90 m/.test(c.message)));
+  });
+});
+
+describe('Candidate outcomes', () => {
+  test('passes / warns / draft only / exception / blocked are distinct', () => {
+    const outcomes = new Set(svc.candidates(ctx, u('sam'), 'MOV-001').map((c) => c.outcome));
+    assert.ok(outcomes.has('PASSES'));
+    assert.ok(outcomes.has('EXCEPTION_REQUIRED'));
+    assert.ok(outcomes.has('BLOCKED'));
+  });
+});
+
+describe('Trainee assumption', () => {
+  test('trainee can be drafted but not confirmed, and no role can override', () => {
+    const holt = svc.candidates(ctx, u('sam'), 'MOV-004').find((c) => c.pilot.id === 'P08');
+    assert.equal(holt.pilot.trainee, true);
+    assert.equal(holt.outcome, 'DRAFT_ONLY');
+    assert.match(holt.checks.find((c) => c.code === 'TRAINEE_SUPERVISION').message, /Prototype assumption/);
+    const a = alloc('ALC-SEED0004');
+    assert.equal(code(() => svc.confirmAllocation(ctx, u('sam'), { allocationId: a.id, version: a.version })), 'CONFIRMATION_HELD');
+  });
+});
+
+describe('Missing information', () => {
+  test('missing draught: draft allowed, confirmation held, re-evaluated when supplied', () => {
+    const args = { movementId: 'MOV-006', pilotId: 'P02' }; // Bevan, KESTREL BAY
+    const bevan = svc.candidates(ctx, u('alex'), 'MOV-006').find((c) => c.pilot.id === 'P02');
+    assert.equal(bevan.outcome, 'DRAFT_ONLY');
+    assert.ok(!bevan.checks.some((c) => c.code === 'DRAUGHT_EXCEEDS_LIMIT'), 'missing draught must not be treated as a pass or a fail');
+    assert.equal(code(() => svc.createAllocation(ctx, u('alex'), { ...args, confirm: true })), 'CONFIRMATION_HELD');
+    const a = svc.createAllocation(ctx, u('alex'), args);
+    assert.equal(code(() => svc.confirmAllocation(ctx, u('alex'), { allocationId: a.id, version: a.version })), 'CONFIRMATION_HELD');
+
+    const m = ctx.db.prepare('SELECT * FROM movements WHERE id = ?').get('MOV-006');
+    svc.updateMovement(ctx, u('sam'), { movementId: 'MOV-006', version: m.version, changes: { draught_m: 9.8 } });
+    const after = svc.candidates(ctx, u('alex'), 'MOV-006').find((c) => c.pilot.id === 'P02');
+    assert.equal(after.outcome, 'PASSES');
+    let cur = alloc(a.id);
+    svc.markReviewed(ctx, u('alex'), { allocationId: a.id, version: cur.version });
+    cur = alloc(a.id);
+    assert.equal(svc.confirmAllocation(ctx, u('alex'), { allocationId: a.id, version: cur.version }).status, 'CONFIRMED');
+  });
+
+  test('board rows list missing required fields', () => {
+    const k = svc.listMovements(ctx, u('alex')).find((m) => m.id === 'MOV-006');
+    assert.deepEqual(k.missing_fields.map((f) => f.label), ['Draught']);
+  });
+});
+
+describe('Communication and acknowledgement are separate steps', () => {
+  test('cannot acknowledge before sending', () => {
+    const a = svc.createAllocation(ctx, u('alex'), { movementId: 'MOV-001', pilotId: 'P01', confirm: true });
+    assert.equal(code(() => svc.setCommStatus(ctx, u('alex'), { allocationId: a.id, version: a.version, status: 'ACKNOWLEDGED' })), 'CONFLICT');
+    const s1 = svc.setCommStatus(ctx, u('alex'), { allocationId: a.id, version: a.version, status: 'SENT' });
+    assert.equal(svc.setCommStatus(ctx, u('alex'), { allocationId: a.id, version: s1.version, status: 'ACKNOWLEDGED' }).comm_status, 'ACKNOWLEDGED');
+  });
+});
+
+describe('Timeline uses the same times as the checks', () => {
+  test('assignment window and transit allowance match the movement and config', () => {
+    const { pilots, transitAllowanceMinutes } = svc.listPilots(ctx, u('alex'));
+    const job = pilots.find((p) => p.id === 'P03').assignments.find((j) => j.movement_id === 'MOV-002');
+    const m = ctx.db.prepare('SELECT * FROM movements WHERE id = ?').get('MOV-002');
+    assert.equal(job.start, m.scheduled_start);
+    assert.equal(Date.parse(job.end) - Date.parse(job.start), m.duration_minutes * 60_000);
+    assert.equal(Date.parse(job.start) - Date.parse(job.occupied_start), transitAllowanceMinutes * 60_000);
+  });
+});
+
+describe('Discovery walkthrough (ATLANTIC FORTUNE)', () => {
+  test('draft → confirm → communicate → time change invalidates → review flag → reallocate → audit', () => {
+    // 1–2. Unallocated movement; Bevan passes, Ashworth needs a supervisor exception (outside duty)
+    const list = svc.candidates(ctx, u('alex'), 'MOV-005');
+    assert.equal(list.find((c) => c.pilot.id === 'P02').outcome, 'PASSES');
+    assert.equal(list.find((c) => c.pilot.id === 'P01').outcome, 'BLOCKED');
+    // 3–4. Draft, then confirm
+    let a = svc.createAllocation(ctx, u('alex'), { movementId: 'MOV-005', pilotId: 'P02' });
+    a = svc.confirmAllocation(ctx, u('alex'), { allocationId: a.id, version: a.version });
+    // 5. Communication then acknowledgement
+    a = svc.setCommStatus(ctx, u('alex'), { allocationId: a.id, version: a.version, status: 'SENT' });
+    a = svc.setCommStatus(ctx, u('alex'), { allocationId: a.id, version: a.version, status: 'ACKNOWLEDGED' });
+    // 6. Move 4h earlier: now starts before Bevan's duty period
+    const m = ctx.db.prepare('SELECT * FROM movements WHERE id = ?').get('MOV-005');
+    const earlier = new Date(Date.parse(m.scheduled_start) - 4 * 3600_000).toISOString();
+    svc.updateMovement(ctx, u('sam'), { movementId: 'MOV-005', version: m.version, changes: { scheduled_start: earlier } });
+    // 7. Confirmed allocation no longer appears clear
+    const row = svc.listMovements(ctx, u('alex')).find((x) => x.id === 'MOV-005');
+    assert.equal(row.allocation_status, 'NEEDS_REVIEW');
+    const reasons = alloc(a.id).review_reasons;
+    assert.match(reasons, /Scheduled start changed/);
+    assert.match(reasons, /outside the recorded duty period/);
+    assert.equal(code(() => svc.markReviewed(ctx, u('alex'), { allocationId: a.id, version: alloc(a.id).version })), 'ALLOCATION_BLOCKED');
+    // 8. Reallocate to a pilot who now passes
+    const now = svc.candidates(ctx, u('alex'), 'MOV-005').find((c) => c.pilot.id === 'P01');
+    assert.equal(now.outcome, 'PASSES');
+    const next = svc.reallocate(ctx, u('alex'), { allocationId: a.id, version: alloc(a.id).version, pilotId: 'P01',
+      reason: 'Arrival brought forward before Bevan on duty', reasonCategory: 'MOVEMENT_CHANGE', confirm: true });
+    assert.equal(next.status, 'CONFIRMED');
+    assert.equal(alloc(a.id).status, 'SUPERSEDED');
+    const actions = svc.listAudit(ctx, u('sam'), { movementId: 'MOV-005' }).map((e) => e.action);
+    assert.deepEqual(actions, ['ALLOCATION_CREATED', 'ALLOCATION_CONFIRMED', 'COMMUNICATION_STATUS', 'COMMUNICATION_STATUS',
+      'MOVEMENT_UPDATED', 'ALLOCATION_FLAGGED', 'ALLOCATION_REASSIGNED', 'ALLOCATION_CONFIRMED']);
+    const reassigned = svc.listAudit(ctx, u('sam'), { movementId: 'MOV-005' }).find((e) => e.action === 'ALLOCATION_REASSIGNED');
+    assert.equal(reassigned.before.pilot_name, 'Pilot Bevan');
+    assert.equal(reassigned.after.pilot_name, 'Pilot Ashworth');
+    assert.equal(reassigned.vessel_name, 'ATLANTIC FORTUNE');
   });
 });

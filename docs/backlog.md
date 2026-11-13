@@ -26,14 +26,14 @@ Structured to match the epic's work breakdown. Each feature can be raised as a J
 |---|---|---|
 | F3.1 Movement board (AC1) | Filter by area, time window and unresolved. Shows allocation status per movement | ✅ |
 | F3.2 Pilot availability view (AC2) | Duty, unavailability and assignments on a timeline. Stale availability flagged | ✅ |
-| F3.3 Candidate assessment (AC2) | For a selected movement, each pilot shows eligible / warnings / exception needed / blocked, with reasons | ✅ |
+| F3.3 Candidate assessment (AC2) | For a selected movement, each pilot shows passes configured checks / warnings / draft only / needs exception / blocked, with reasons | ✅ |
 | F3.4 Operational colleague view | Read-only. Confirmed assignments only | ✅ |
 
 ## F4 Allocation checks and assignment (AC3)
 
 | Story | Acceptance criteria | Prototype |
 |---|---|---|
-| F4.1 Assign pilot as draft or confirmed | Allocator can assign an eligible pilot. Draft and confirmed are distinct | ✅ |
+| F4.1 Assign pilot as draft or confirmed | Allocator can assign a pilot who passes configured checks. Draft and confirmed are distinct. Confirmation re-runs the checks | ✅ |
 | F4.2 Blocking checks | Assignment is refused with reasons when a blocking check fails | ✅ |
 | F4.3 Warnings | Allocator must acknowledge warnings. Warnings are stored on the allocation | ✅ |
 | F4.4 Authorised exceptions | Only permitted roles can override. A reason is required and recorded | ✅ |
@@ -55,7 +55,7 @@ Structured to match the epic's work breakdown. Each feature can be raised as a J
 |---|---|---|
 | F6.1 Role-based access | Actions limited to the agreed role matrix (D-07) | ✅ placeholder roles |
 | F6.2 Integrate identity service | Users authenticate with the agreed service (D-08) | Stub |
-| F6.3 Audit trail | Every change records user, role, time, before/after and reason. Log is append-only | ✅ |
+| F6.3 Audit trail | Every change records user, role, time, before/after and reason, shown in readable form. Prototype: events are added, never edited, but the log is not tamper-proof | ✅ |
 | F6.4 Allocation history view | Supervisor and allocator can see the full chain for a movement | ✅ |
 
 ## F7 Communication and acknowledgement (AC7, scope decision D-06)

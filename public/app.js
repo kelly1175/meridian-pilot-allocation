@@ -1,11 +1,24 @@
 // Meridian Pilot Allocation — allocator workspace (vanilla JS, no build step).
+// All rule outcomes come from the server; rules are illustrative (src/config/rules.json).
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const time = (iso) => iso ? `${iso.slice(5, 10).replace('-', '/')} ${iso.slice(11, 16)}` : '—';
-const LABEL = { UNALLOCATED: 'Unallocated', DRAFT: 'Draft', CONFIRMED: 'Confirmed', NEEDS_REVIEW: 'Needs review', CANCELLED: 'Cancelled',
-  NOT_REQUIRED: 'No pilot req.', COMPLETED: 'Completed', ELIGIBLE: 'Eligible', WARNING: 'Warnings', EXCEPTION_REQUIRED: 'Exception needed',
-  BLOCKED: 'Blocked', NOT_SENT: 'Not sent', SENT: 'Sent', ACKNOWLEDGED: 'Acknowledged', DECLINED: 'Declined' };
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const hm = (iso) => iso ? iso.slice(11, 16) : '—';
+const time = (iso) => iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)} ${iso.slice(11, 16)}` : '—';
+const dayLabel = (ms) => { const d = new Date(ms); return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+const addMin = (iso, min) => new Date(Date.parse(iso) + min * 60_000).toISOString();
+
+const LABEL = {
+  UNALLOCATED: 'Unallocated', DRAFT: 'Draft', CONFIRMED: 'Confirmed', NEEDS_REVIEW: 'Requires review', CANCELLED: 'Cancelled',
+  NOT_REQUIRED: 'No pilot req.', COMPLETED: 'Completed', SUPERSEDED: 'Superseded',
+  PASSES: 'Passes configured checks', WARNING: 'Warnings to review', DRAFT_ONLY: 'Draft only — cannot confirm',
+  EXCEPTION_REQUIRED: 'Needs authorised exception', BLOCKED: 'Blocked',
+  NOT_SENT: 'Not sent', SENT: 'Sent (simulated)', AWAITING: 'Awaiting response', ACKNOWLEDGED: 'Acknowledged', DECLINED: 'Declined',
+};
 const badge = (s, prefix = 's') => `<span class="badge ${prefix}-${esc(s)}">${esc(LABEL[s] ?? s)}</span>`;
+const traineeBadge = '<span class="badge trainee" title="Trainee pilot. Supervision requirements are not defined in this prototype.">TRAINEE</span>';
+const HELP = 'Based on the prototype’s configured rules and recorded information. The allocator retains the decision.';
 
 const state = { user: null, me: null, config: null, board: [], selected: null, tab: 'board' };
 
@@ -25,7 +38,7 @@ const can = (p) => state.me?.permissions.includes(p);
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 3500);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 4500);
 }
 function handleError(err) {
   if (!(err instanceof ApiError)) { console.error(err); return toast('Unexpected error'); }
@@ -68,12 +81,14 @@ function showTab(tab) {
   ({ board: loadBoard, pilots: loadPilots, import: renderImport, metrics: loadMetrics, audit: loadAudit })[tab]().catch(handleError);
 }
 
-async function refresh(quiet) {
+async function refresh() {
   await loadBoard();
-  if (state.selected) await loadDetail(state.selected, quiet);
+  if (state.selected) await loadDetail(state.selected);
 }
 
 // ---------- board ----------
+const missingChips = (m) => m.missing_fields.map((f) => `<span class="badge missing">${esc(f.label)} missing</span>`).join(' ');
+
 async function loadBoard() {
   const hrs = Number($('#f-window').value);
   const q = new URLSearchParams({
@@ -86,21 +101,32 @@ async function loadBoard() {
   state.board.forEach((m) => { counts[m.allocation_status] = (counts[m.allocation_status] ?? 0) + 1; });
   $('#summary').innerHTML = ['UNALLOCATED', 'NEEDS_REVIEW', 'DRAFT', 'CONFIRMED']
     .filter((s) => counts[s]).map((s) => `${badge(s)}<strong>${counts[s]}</strong>`).join(' ');
-  $('#refreshed').textContent = `Updated ${new Date().toTimeString().slice(0, 5)}`;
+  $('#refreshed').textContent = `Updated ${new Date().toISOString().slice(11, 16)} UTC`;
   const now = new Date().toISOString();
+  const dim = (v, field) => v ?? `<span class="badge missing">${field} missing</span>`;
   $('#board tbody').innerHTML = state.board.map((m) => `
     <tr data-id="${m.id}" class="${m.id === state.selected ? 'selected' : ''} ${m.scheduled_start < now ? 'past' : ''}">
-      <td>${time(m.scheduled_start)}</td>
+      <td>${time(m.scheduled_start)}<div class="muted small">to ${hm(addMin(m.scheduled_start, m.duration_minutes))}</div></td>
       <td><strong>${esc(m.vessel_name)}</strong><div class="muted small">${esc(m.external_ref ?? '')}</div></td>
       <td>${esc(m.movement_type)}</td>
       <td>${esc(m.from_location)} → ${esc(m.to_location)}</td>
       <td>${esc(m.area)}</td>
-      <td>${m.loa_m ?? '<span class="missing">?</span>'} m / ${m.draught_m ?? '<span class="missing">?</span>'} m</td>
+      <td>${m.loa_m != null ? `${m.loa_m} m` : dim(null, 'LOA')} / ${m.draught_m != null ? `${m.draught_m} m` : dim(null, 'Draught')}</td>
       <td>${badge(m.allocation_status)}</td>
-      <td>${esc(m.allocation?.pilot_name ?? '')}${m.allocation && state.config.features.communicationStatus && m.allocation.status === 'CONFIRMED'
-        ? `<div>${badge(m.allocation.comm_status)}</div>` : ''}</td>
+      <td>${esc(m.allocation?.pilot_name ?? '')}${m.allocation?.pilot_trainee ? ` ${traineeBadge}` : ''}${m.allocation && state.config.features.communicationStatus && m.allocation.status === 'CONFIRMED'
+        ? `<div>${commBadges(m.allocation.comm_status, true)}</div>` : ''}</td>
     </tr>`).join('') || '<tr><td colspan="8" class="muted">No movements match the filters.</td></tr>';
   $('#board tbody').onclick = (e) => { const tr = e.target.closest('tr[data-id]'); if (tr) loadDetail(tr.dataset.id).catch(handleError); };
+}
+
+/** Communication (notification sent?) and acknowledgement (pilot response) shown as separate states. */
+function commBadges(comm, compact) {
+  const sent = comm === 'NOT_SENT' ? 'NOT_SENT' : 'SENT';
+  const ack = comm === 'NOT_SENT' ? null : comm === 'SENT' ? 'AWAITING' : comm;
+  if (compact) return `${badge(sent)}${ack ? ` ${badge(ack)}` : ''}`;
+  return `<dl class="state-grid">
+    <dt>Notification</dt><dd>${badge(sent)}</dd>
+    <dt>Pilot response</dt><dd>${ack ? badge(ack) : '<span class="muted">—</span>'}</dd></dl>`;
 }
 
 // ---------- detail ----------
@@ -115,71 +141,86 @@ async function loadDetail(id) {
 function renderDetail(d, cands) {
   const m = d.movement; const a = d.allocation;
   const actionable = m.status === 'PLANNED' && m.pilot_required;
-  const missing = [m.loa_m == null && 'LOA', m.draught_m == null && 'draught'].filter(Boolean);
+  const missing = m.missing_fields;
   $('#detail').innerHTML = `
     <section>
       <h2>${esc(m.vessel_name)} ${badge(d.allocation_status)}</h2>
       <div class="muted">${esc(m.movement_type)} · ${esc(m.from_location)} → ${esc(m.to_location)}</div>
       <dl class="kv">
-        <dt>Scheduled</dt><dd>${time(m.scheduled_start)} UTC · ${m.duration_minutes} min</dd>
+        <dt>Scheduled</dt><dd>${time(m.scheduled_start)}–${hm(addMin(m.scheduled_start, m.duration_minutes))} UTC · ${m.duration_minutes} min</dd>
         <dt>Area</dt><dd>${esc(m.area)}</dd>
-        <dt>LOA / draught</dt><dd>${m.loa_m ?? '?'} m / ${m.draught_m ?? '?'} m</dd>
+        <dt>LOA</dt><dd>${m.loa_m != null ? `${m.loa_m} m` : '<span class="badge missing">LOA missing</span>'}</dd>
+        <dt>Draught</dt><dd>${m.draught_m != null ? `${m.draught_m} m` : '<span class="badge missing">Draught missing</span>'}</dd>
         <dt>Reference</dt><dd>${esc(m.external_ref ?? '—')} <span class="muted small">(${esc(m.source)}, v${m.version})</span></dd>
         <dt>Movement status</dt><dd>${esc(m.status)}</dd>
       </dl>
-      ${missing.length ? `<div class="callout warn">Missing ${missing.join(' and ')} — suitability cannot be fully checked.</div>` : ''}
-      ${can('movements:update') ? `<div class="actions"><button data-act="sim-time">Simulate time change</button>
-        ${m.status === 'PLANNED' ? '<button data-act="sim-cancel" class="danger">Simulate movement cancelled</button>' : ''}</div>` : ''}
+      ${missing.length ? `<div class="callout warn"><strong>${missing.map((f) => esc(f.label)).join(' and ')} missing.</strong>
+        The related suitability check cannot be completed, so assignments can be drafted but not confirmed.
+        To resolve, obtain the ${missing.map((f) => esc(f.label.toLowerCase())).join(' and ')} from the movement source${can('movements:update') ? ' (in this prototype: <em>Edit sample movement</em> below)' : ''}.
+        <div class="assumption">Prototype assumption: confirmation requires the information needed to complete configured suitability checks.</div></div>` : ''}
+      ${can('movements:update') ? `<div class="actions"><button data-act="edit-movement">Edit sample movement</button>
+        ${m.status === 'PLANNED' ? '<button data-act="sim-cancel" class="danger">Simulate movement cancelled</button>' : ''}
+        <span class="badge sample" title="Stands in for an update from the movement source system">Sample-data control</span></div>` : ''}
     </section>
     <section>
       <h3>Current allocation</h3>
       ${a ? allocationCard(a) : `<p class="muted">${actionable ? 'No pilot allocated.' : 'No allocation required.'}</p>`}
     </section>
-    ${can('allocations:create') && actionable ? `<section><h3>${a ? 'Reallocate to' : 'Candidate pilots'}</h3>${candList(cands, a)}</section>` : ''}
-    ${d.history ? `<section><h3>History</h3>${timeline(d)}</section>` : ''}`;
+    ${can('allocations:create') && actionable ? `<section><h3>${a ? 'Reallocate to' : 'Candidate pilots'}</h3>
+      <p class="help" id="cand-help">${HELP}</p>${candList(cands, a)}</section>` : ''}
+    ${d.history ? `<section><h3>History</h3>${auditList(d.history, false)}</section>` : ''}`;
   $('#detail').onclick = (e) => {
     const b = e.target.closest('button[data-act]'); if (!b) return;
     onAction(b.dataset.act, b.dataset, d, cands).catch(handleError);
   };
 }
 
+/** Effect of a check, in words (meaning never relies on colour alone). */
+function sevLabel(c, role) {
+  if (c.severity === 'WARN') return 'Warning';
+  if (c.severity === 'CONFIRM_HOLD') return 'Prevents confirmation';
+  if (c.overridableBy?.length) return c.overridableBy.includes(role) ? 'Needs authorised exception' : `Blocks (${c.overridableBy.join(', ').toLowerCase()} exception possible)`;
+  return 'Blocks';
+}
+const checkItem = (c) => `<li class="${c.severity}"><span class="sev">${esc(sevLabel(c, state.me.role))}</span>${esc(c.message)}</li>`;
+
 function allocationCard(a) {
   const comm = state.config.features.communicationStatus;
+  const open = (a.current_checks ?? []).filter((c) => !c.accepted_exception);
+  const blocking = open.filter((c) => c.severity === 'BLOCK');
+  const holds = open.filter((c) => c.severity === 'CONFIRM_HOLD');
+  const cannotConfirm = a.status === 'DRAFT' && (blocking.length || holds.length || a.needs_review);
+  const why = a.needs_review ? 'Resolve the review first' : [...blocking, ...holds].map((c) => c.message).join(' ');
   return `
-    <div><strong>${esc(a.pilot_name)}</strong> ${badge(a.status)} ${a.status === 'CONFIRMED' && comm ? badge(a.comm_status) : ''}</div>
-    <div class="muted small">Created ${time(a.created_at)} by ${esc(a.created_by)}${a.confirmed_at ? ` · confirmed ${time(a.confirmed_at)} by ${esc(a.confirmed_by)}` : ''}</div>
-    ${a.needs_review ? `<div class="callout warn"><strong>Review required</strong><ul>${a.review_reasons.map((r) => `<li>${esc(r.reason)}</li>`).join('')}</ul></div>` : ''}
+    <div><strong>${esc(a.pilot_name)}</strong> ${a.pilot_trainee ? traineeBadge : ''} ${badge(a.status)}</div>
+    <div class="muted small">Created ${time(a.created_at)} UTC by ${esc(a.created_by)}${a.confirmed_at ? ` · confirmed ${time(a.confirmed_at)} UTC by ${esc(a.confirmed_by)}` : ''}</div>
+    ${a.needs_review ? `<div class="callout warn"><strong>Requires review.</strong> A change affected this allocation:<ul>${a.review_reasons.map((r) => `<li>${esc(r.reason)}</li>`).join('')}</ul></div>` : ''}
+    ${a.status === 'DRAFT' && !a.needs_review && (blocking.length || holds.length) ? `<div class="callout hold" id="confirm-why"><strong>Cannot confirm yet</strong><ul>${[...blocking, ...holds].map(checkItem).join('')}</ul></div>` : ''}
     ${a.exceptions.length ? `<div class="callout bad"><strong>Authorised exception</strong><ul>${a.exceptions.map((x) => `<li>${esc(x.message)} — “${esc(x.reason)}” (${esc(x.by)})</li>`).join('')}</ul></div>` : ''}
-    ${a.warnings.length ? `<details><summary>${a.warnings.length} warning(s) accepted at assignment</summary><ul>${a.warnings.map((w) => `<li>${esc(w.message)}</li>`).join('')}</ul></details>` : ''}
+    ${a.warnings.length ? `<details><summary>${a.warnings.length} warning(s) acknowledged at assignment</summary><ul>${a.warnings.map((w) => `<li>${esc(w.message)}</li>`).join('')}</ul></details>` : ''}
+    ${a.status === 'CONFIRMED' && comm ? commBadges(a.comm_status, false) + '<div class="assumption">Communication is simulated. No message is sent.</div>' : ''}
     ${can('allocations:create') ? `<div class="actions">
-      ${a.status === 'DRAFT' ? `<button class="primary" data-act="confirm" ${a.needs_review ? 'disabled title="Resolve review first"' : ''}>Confirm</button>` : ''}
+      ${a.status === 'DRAFT' ? `<button class="primary" data-act="confirm" ${cannotConfirm ? `disabled title="${esc(why)}" aria-describedby="confirm-why"` : ''}>Confirm</button>` : ''}
       ${a.needs_review ? '<button data-act="review">Mark reviewed</button>' : ''}
       <button data-act="cancel" class="danger">Cancel allocation</button>
-      ${a.status === 'CONFIRMED' && comm ? `<button data-act="comm" data-status="SENT">Mark sent</button>
-        <button data-act="comm" data-status="ACKNOWLEDGED">Pilot acknowledged</button>
-        <button data-act="comm" data-status="DECLINED">Pilot declined</button>` : ''}
+      ${a.status === 'CONFIRMED' && comm && a.comm_status === 'NOT_SENT' ? '<button data-act="comm" data-status="SENT">Send notification (simulated)</button>' : ''}
+      ${a.status === 'CONFIRMED' && comm && a.comm_status === 'SENT' ? `<button data-act="comm" data-status="ACKNOWLEDGED">Record acknowledgement</button>
+        <button data-act="comm" data-status="DECLINED">Record decline</button>` : ''}
     </div>` : ''}`;
+}
+
+function limitsText(p) {
+  return p.limits ? `≤${p.limits.maxLoaM} m LOA · ≤${p.limits.maxDraughtM} m draught` : 'no configured limits';
 }
 
 function candList(cands, a) {
   return cands.filter((c) => !c.is_current).map((c, i) => `
     <div class="cand">
-      <header><span class="name">${esc(c.pilot.name)}</span><span class="muted small">${esc(c.pilot.grade)}</span>${badge(c.outcome, 'o')}
-        <button data-act="${a ? 'reallocate' : 'assign'}" data-i="${i}" ${c.outcome === 'BLOCKED' ? 'disabled' : ''}>${a ? 'Reallocate' : 'Assign'}</button></header>
-      ${c.checks.length ? `<ul>${c.checks.map((k) => `<li class="${k.severity}">${esc(k.message)}${k.overridableBy.length && k.severity === 'BLOCK' ? ` <em>(exception: ${k.overridableBy.join(', ').toLowerCase()})</em>` : ''}</li>`).join('')}</ul>` : ''}
+      <header><span class="name">${esc(c.pilot.name)} ${c.pilot.trainee ? traineeBadge : ''}</span><span class="muted small">${esc(c.pilot.grade)}</span>${badge(c.outcome, 'o')}
+        <button data-act="${a ? 'reallocate' : 'assign'}" data-i="${i}" ${c.outcome === 'BLOCKED' ? 'disabled' : ''} aria-describedby="cand-help">${a ? 'Reallocate' : 'Assign'}</button></header>
+      <div class="muted small">${esc(limitsText(c.pilot))} · areas ${esc(c.pilot.areas.join(', '))}</div>
+      ${c.checks.length ? `<ul>${c.checks.map(checkItem).join('')}</ul>` : '<div class="small muted">No configured check raised an issue.</div>'}
     </div>`).join('') || '<p class="muted">No pilots configured.</p>';
-}
-
-function timeline(d) {
-  return `<ul class="timeline">${[...d.history].reverse().map((e) => `
-    <li><div><span class="what">${esc(e.action.replaceAll('_', ' ').toLowerCase())}</span> · ${esc(e.actor)} <span class="muted">(${esc(e.actor_role.toLowerCase())})</span></div>
-      <div class="muted small">${time(e.at)} UTC${e.reason ? ` · “${esc(e.reason)}”` : ''}</div>
-      ${e.before || e.after ? `<div class="small">${describe(e)}</div>` : ''}
-      ${e.details?.reasons ? `<div class="small">${e.details.reasons.map(esc).join('<br>')}</div>` : ''}</li>`).join('')}</ul>`;
-}
-function describe(e) {
-  const f = (o) => o ? Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'string' && v.includes('T') && v.endsWith('Z') ? time(v) : v}`).join(', ') : '';
-  return `${e.before ? `<span class="muted">${esc(f(e.before))}</span> → ` : ''}${esc(f(e.after))}`;
 }
 
 // ---------- actions ----------
@@ -197,7 +238,7 @@ async function onAction(act, data, d, cands) {
   } else if (act === 'confirm') {
     await api(`/api/allocations/${a.id}/confirm`, { method: 'POST', body: { version: a.version } }); toast('Allocation confirmed');
   } else if (act === 'review') {
-    const r = await formDialog('Mark reviewed', `<p>Confirm ${esc(a.pilot_name)} remains suitable after the change.</p><label>Note<input name="note" placeholder="Optional"></label>`);
+    const r = await formDialog('Mark reviewed', `<p>Confirm ${esc(a.pilot_name)} remains suitable after the change. The checks are re-run; if the pilot no longer passes, you'll need to reallocate or cancel.</p><label>Note<input name="note" id="review-note" placeholder="Optional"></label>`);
     if (!r) return;
     await api(`/api/allocations/${a.id}/review`, { method: 'POST', body: { version: a.version, note: r.note } }); toast('Review cleared');
   } else if (act === 'cancel') {
@@ -207,85 +248,148 @@ async function onAction(act, data, d, cands) {
     toast('Allocation cancelled');
   } else if (act === 'comm') {
     await api(`/api/allocations/${a.id}/communication`, { method: 'POST', body: { version: a.version, status: data.status } });
-    toast(`Communication: ${LABEL[data.status]}`);
-  } else if (act === 'sim-time') {
-    const r = await formDialog('Simulate source change: new time', `<p class="muted">Stands in for a movement-feed update until integration is agreed.</p>
-      <label>New start (UTC)<input name="t" type="datetime-local" required value="${new Date(Date.parse(m.scheduled_start) + 90 * 60_000).toISOString().slice(0, 16)}"></label>`);
-    if (!r) return;
-    await api(`/api/movements/${m.id}`, { method: 'PATCH', body: { version: m.version, changes: { scheduled_start: `${r.t}:00Z` } } });
-    toast('Movement time changed');
+    toast({ SENT: 'Notification recorded as sent (simulated — nothing was sent)', ACKNOWLEDGED: 'Pilot acknowledgement recorded', DECLINED: 'Pilot decline recorded — allocation requires review' }[data.status]);
+  } else if (act === 'edit-movement') {
+    await editMovementDialog(m);
   } else if (act === 'sim-cancel') {
-    if (!await formDialog('Simulate source change', '<p>Mark this movement as cancelled in the source system?</p>')) return;
+    if (!await formDialog('Sample-data control', '<p>Mark this movement as cancelled, as if the movement source had reported it?</p>')) return;
     await api(`/api/movements/${m.id}`, { method: 'PATCH', body: { version: m.version, changes: { status: 'CANCELLED' } } });
     toast('Movement cancelled');
   }
   await refresh();
 }
 
+async function editMovementDialog(m) {
+  const startLocal = m.scheduled_start.slice(0, 16);
+  const r = await formDialog('Edit sample movement', `
+    <p class="callout info">Sample-data control. Stands in for an update from the movement source system. Not a planned feature.</p>
+    <label>Start (UTC)<input type="datetime-local" name="start" id="em-start" required value="${startLocal}"></label>
+    <div class="shift-row" role="group" aria-label="Shift start time">
+      ${[-4, -1, 1, 4].map((h) => `<button type="button" data-shift="${h}">${h > 0 ? '+' : '−'}${Math.abs(h)} h</button>`).join('')}
+    </div>
+    <label>LOA (m)<input type="number" step="0.1" min="1" name="loa" id="em-loa" value="${m.loa_m ?? ''}" placeholder="Missing"></label>
+    <label>Draught (m)<input type="number" step="0.1" min="0.1" name="draught" id="em-draught" value="${m.draught_m ?? ''}" placeholder="Missing"></label>
+    <p class="help">Leave LOA or draught empty to record it as missing. Any change to a movement with an allocation flags it for review.</p>`, 'Apply change', (form) => {
+    form.querySelectorAll('[data-shift]').forEach((b) => b.addEventListener('click', () => {
+      const input = form.querySelector('#em-start');
+      input.value = new Date(Date.parse(`${input.value}:00Z`) + Number(b.dataset.shift) * 3600_000).toISOString().slice(0, 16);
+    }));
+  });
+  if (!r) return;
+  const changes = {};
+  // The time input has minute precision; only treat the start as changed if the minute changed.
+  if (r.start !== startLocal) changes.scheduled_start = new Date(`${r.start}:00Z`).toISOString();
+  const loa = r.loa === '' ? null : Number(r.loa);
+  const dr = r.draught === '' ? null : Number(r.draught);
+  if (loa !== m.loa_m) changes.loa_m = loa;
+  if (dr !== m.draught_m) changes.draught_m = dr;
+  if (!Object.keys(changes).length) return toast('No changes');
+  await api(`/api/movements/${m.id}`, { method: 'PATCH', body: { version: m.version, changes } });
+  toast('Movement updated. Affected allocations are flagged for review.');
+}
+
 function reasonFields() {
-  return `<label>Reason category<select name="reasonCategory" required>${state.config.reasonCategories
+  return `<label>Reason category<select name="reasonCategory" id="reason-cat" required>${state.config.reasonCategories
     .map((c) => `<option value="${c}">${c.replaceAll('_', ' ').toLowerCase()}</option>`).join('')}</select></label>
-    <label>Reason<input name="reason" required placeholder="What changed and why"></label>`;
+    <label>Reason<input name="reason" id="reason-text" required placeholder="What changed and why"></label>`;
 }
 
 async function allocationDialog(c, isRealloc) {
   const warns = c.checks.filter((k) => k.severity === 'WARN');
   const excs = c.checks.filter((k) => k.severity === 'BLOCK');
+  const holds = c.checks.filter((k) => k.severity === 'CONFIRM_HOLD');
   const body = `
-    <p><strong>${esc(c.pilot.name)}</strong> · ${esc(c.pilot.grade)} · max ${c.pilot.max_loa_m} m LOA / ${c.pilot.max_draught_m} m draught</p>
+    <p><strong>${esc(c.pilot.name)}</strong> ${c.pilot.trainee ? traineeBadge : ''} · ${esc(c.pilot.grade)} · ${esc(limitsText(c.pilot))}</p>
+    <p class="help">${HELP}</p>
     ${excs.length ? `<div class="callout bad"><strong>Authorised exception required</strong><ul>${excs.map((k) => `<li>${esc(k.message)}</li>`).join('')}</ul></div>
-      <label>Exception reason<input name="overrideReason" required></label>` : ''}
+      <label>Exception reason<input name="overrideReason" id="override-reason" required></label>` : ''}
+    ${holds.length ? `<div class="callout hold"><strong>Draft only — cannot be confirmed</strong><ul>${holds.map((k) => `<li>${esc(k.message)}</li>`).join('')}</ul></div>` : ''}
     ${warns.length ? `<div class="callout warn"><strong>Warnings</strong><ul>${warns.map((k) => `<li>${esc(k.message)}</li>`).join('')}</ul></div>
-      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="acceptWarnings" required> I have reviewed these warnings</label>` : ''}
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="acceptWarnings" id="accept-warnings" required> I have reviewed these warnings</label>` : ''}
     ${isRealloc ? reasonFields() : ''}
-    <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="confirm"> Confirm immediately (otherwise saved as draft)</label>`;
+    <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="confirm" id="confirm-now" ${holds.length ? 'disabled' : ''}>
+      Confirm immediately${holds.length ? ' (not available: see above)' : ' (otherwise saved as draft)'}</label>`;
   const r = await formDialog(isRealloc ? 'Reallocate pilot' : 'Assign pilot', body, isRealloc ? 'Reallocate' : 'Assign');
   if (!r) return null;
   return { ...r, confirm: r.confirm === 'on', acceptWarnings: r.acceptWarnings === 'on' };
 }
 
-function formDialog(title, html, okLabel = 'OK') {
+function formDialog(title, html, okLabel = 'OK', onOpen) {
   const dlg = $('#dlg'); const form = $('#dlg-form');
   form.innerHTML = `<h2>${esc(title)}</h2>${html}<div class="row"><button value="cancel" formnovalidate>Back</button><button class="primary" value="ok">${esc(okLabel)}</button></div>`;
+  onOpen?.(form);
   dlg.showModal();
   return new Promise((resolve) => {
     dlg.onclose = () => resolve(dlg.returnValue === 'ok' ? Object.fromEntries(new FormData(form)) : null);
   });
 }
 
-// ---------- pilots ----------
+// ---------- pilot availability timeline ----------
 async function loadPilots() {
-  const pilots = await api('/api/pilots');
-  const from = Date.now() - 12 * 3600_000; const span = 48 * 3600_000;
-  const pos = (s, e) => {
-    const l = Math.max(0, (Date.parse(s) - from) / span * 100); const r = Math.min(100, (Date.parse(e) - from) / span * 100);
-    return `left:${l}%;width:${Math.max(0.5, r - l)}%`;
-  };
-  const nowPos = (12 / 48) * 100;
+  const data = await api('/api/pilots');
+  const from = Date.parse(data.from); const to = Date.parse(data.to); const span = to - from;
+  const pct = (iso) => Math.min(100, Math.max(0, ((typeof iso === 'number' ? iso : Date.parse(iso)) - from) / span * 100));
+  const box = (s, e) => { const l = pct(s); return `left:${l}%;width:${Math.max(0.3, pct(e) - l)}%`; };
+
+  // Ticks every 3 hours on the UTC clock; midnights carry the date.
+  const ticks = []; const H = 3600_000;
+  for (let t = Math.ceil(from / (3 * H)) * 3 * H; t < to; t += 3 * H) ticks.push(t);
+  const midnights = ticks.filter((t) => t % (24 * H) === 0);
+  const axis = `<div class="tl-axis" aria-hidden="true">
+      <span class="day" style="left:0">${dayLabel(from)} · all times UTC</span>
+      ${midnights.map((t) => `<span class="day" style="left:${pct(t)}%">${pct(t) > 90 ? dayLabel(t).split(' ').slice(0, 2).join(' ') : dayLabel(t)}</span>`).join('')}
+      ${ticks.map((t) => `<span class="tick" style="left:${pct(t)}%">${new Date(t).toISOString().slice(11, 16)}</span>`).join('')}
+      <span class="nowlabel" style="left:${pct(data.now)}%">Now ${hm(data.now)} UTC</span></div>`;
+  const grid = ticks.map((t) => `<span class="grid ${t % (24 * H) === 0 ? 'midnight' : ''}" style="left:${pct(t)}%"></span>`).join('');
+  const jobLabel = (j) => `${j.vessel_name} (${j.external_ref}) · ${j.needs_review ? 'Requires review, ' : ''}${LABEL[j.status]} · ${time(j.start)}–${hm(j.end)} UTC · transit allowance ${hm(j.occupied_start)}–${hm(j.occupied_end)}`;
+
   $('#view-pilots').innerHTML = `
-    <p class="muted">Availability −12h to +36h. Green = on duty, red = unavailable, blue = assignment. Line = now.</p>
-    <div class="board-wrap"><table><thead><tr><th style="width:220px">Pilot</th><th>Limits / areas</th><th style="width:50%">Timeline</th></tr></thead><tbody>
-    ${pilots.map((p) => `<tr>
-      <td><strong>${esc(p.name)}</strong><div class="muted small">${esc(p.grade)}</div>
-        ${p.availability_stale ? `<span class="badge s-NEEDS_REVIEW" title="Last updated ${esc(p.availability_updated_at)}">Availability may be outdated</span>` : ''}</td>
-      <td>${p.max_loa_m} m / ${p.max_draught_m} m<div class="muted small">${p.areas.join(', ')}</div></td>
-      <td><div class="bar">${p.availability.map((b) => `<span class="${b.kind}" style="${pos(b.start_at, b.end_at)}" title="${esc(b.note ?? b.kind)}">${esc(b.note ?? '')}</span>`).join('')}
-        ${p.assignments.map((j) => `<span class="JOB" style="${pos(j.scheduled_start, new Date(Date.parse(j.scheduled_start) + j.duration_minutes * 60_000).toISOString())}" title="${esc(j.vessel_name)} (${j.status})"></span>`).join('')}
-        <span class="nowline" style="left:${nowPos}%"></span></div>
-        ${can('pilots:update_availability') ? `<button class="small" data-pilot="${p.id}" data-name="${esc(p.name)}">Record unavailability</button>` : ''}</td>
+    <div class="tl-legend">
+      <span><i class="sw" style="background:var(--ok-bg);border-bottom:2px solid var(--ok)"></i>On duty</span>
+      <span><i class="sw" style="border:1.5px solid var(--bad);background:repeating-linear-gradient(135deg,var(--bad-bg) 0 4px,transparent 4px 8px)"></i>Unavailable</span>
+      <span><i class="sw" style="background:var(--accent);border:2px solid var(--accent)"></i>Confirmed</span>
+      <span><i class="sw" style="border:2px dashed var(--accent)"></i>Draft</span>
+      <span><i class="sw" style="background:var(--warn-bg);border:2px dashed var(--warn)"></i>Requires review</span>
+      <span><i class="sw" style="background:repeating-linear-gradient(90deg,var(--muted) 0 1px,transparent 1px 4px);opacity:.6"></i>Transit allowance (${data.transitAllowanceMinutes} min, illustrative)</span>
+      <span><i class="sw" style="width:2px;background:var(--ink)"></i>Now</span>
+    </div>
+    <div class="board-wrap"><table class="tl-table"><thead><tr><th style="width:200px">Pilot</th><th style="width:170px">Class limits / areas</th>
+      <th class="tl-cell">${axis}</th></tr></thead><tbody>
+    ${data.pilots.map((p) => `<tr>
+      <td><strong>${esc(p.name)}</strong> ${p.trainee ? traineeBadge : ''}<div class="muted small">${esc(p.grade)}</div>
+        ${p.trainee ? '<div class="assumption">Supervision requirement: not defined. Prototype assumption: assignments can be drafted, not confirmed.</div>' : ''}
+        ${p.availability_stale ? `<span class="badge missing" title="Last updated ${esc(p.availability_updated_at)}">Availability may be outdated</span>` : ''}</td>
+      <td class="small">${esc(limitsText(p))}<div class="muted">${p.areas.join(', ')}</div></td>
+      <td class="tl-cell">
+        <div class="tl-track">${grid}
+          ${p.availability.map((b) => `<span class="duty ${b.kind}" style="${box(b.start_at, b.end_at)}" title="${esc(b.kind === 'ON_DUTY' ? 'On duty' : 'Unavailable')} ${time(b.start_at)}–${time(b.end_at)} UTC${b.note ? ` (${esc(b.note)})` : ''}">${b.kind === 'ON_DUTY' ? 'On duty' : `Unavailable${b.note ? ` · ${esc(b.note)}` : ''}`}</span>`).join('')}
+          ${p.assignments.map((j) => `<span class="buffer" style="${box(j.occupied_start, j.occupied_end)}"></span>
+            <button class="job ${j.status} ${j.needs_review ? 'review' : ''}" style="${box(j.start, j.end)}" data-movement="${j.movement_id}"
+              title="${esc(jobLabel(j))}" aria-label="${esc(jobLabel(j))}">${j.needs_review ? '⚠ ' : ''}${j.status === 'DRAFT' ? 'Draft · ' : ''}${esc(j.vessel_name)}</button>`).join('')}
+          <span class="nowline" style="left:${pct(data.now)}%" aria-hidden="true"></span>
+        </div>
+        ${p.assignments.length ? `<ul class="tl-jobs">${p.assignments.map((j) => `<li>${j.needs_review ? '⚠ ' : j.status === 'DRAFT' ? '◌ ' : '● '}<strong>${esc(j.vessel_name)}</strong>
+          <span class="muted">${esc(j.external_ref)}</span> · ${j.needs_review ? '<strong>Requires review</strong> · ' : ''}${LABEL[j.status]} · ${time(j.start)}–${hm(j.end)} UTC
+          <span class="muted">(± ${data.transitAllowanceMinutes} min transit: ${hm(j.occupied_start)}–${hm(j.occupied_end)})</span></li>`).join('')}</ul>` : ''}
+        ${can('pilots:update_availability') ? `<div style="margin-top:6px"><button class="small" data-pilot="${p.id}" data-name="${esc(p.name)}">Record unavailability</button></div>` : ''}
+      </td>
     </tr>`).join('')}</tbody></table></div>`;
+
   $('#view-pilots').onclick = async (e) => {
+    const job = e.target.closest('button[data-movement]');
+    if (job) { showTab('board'); return loadDetail(job.dataset.movement).catch(handleError); }
     const b = e.target.closest('button[data-pilot]'); if (!b) return;
     const start = new Date(Date.now() + 3600_000).toISOString().slice(0, 16);
     const end = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 16);
     const r = await formDialog(`Record unavailability: ${b.dataset.name}`, `
-      <label>From (UTC)<input type="datetime-local" name="start" required value="${start}"></label>
-      <label>To (UTC)<input type="datetime-local" name="end" required value="${end}"></label>
-      <label>Note<input name="note" placeholder="e.g. Sick, training"></label>`, 'Save');
+      <p class="callout info">Sample-data control. Stands in for an update from the pilot availability source.</p>
+      <label>From (UTC)<input type="datetime-local" name="start" id="un-start" required value="${start}"></label>
+      <label>To (UTC)<input type="datetime-local" name="end" id="un-end" required value="${end}"></label>
+      <label>Note<input name="note" id="un-note" placeholder="e.g. Sick, training"></label>`, 'Save');
     if (!r) return;
     try {
       const res = await api(`/api/pilots/${b.dataset.pilot}/unavailability`, { method: 'POST', body: { start: `${r.start}:00Z`, end: `${r.end}:00Z`, note: r.note } });
-      toast(res.flaggedAllocations.length ? `${res.flaggedAllocations.length} allocation(s) flagged for review` : 'Saved — no allocations affected');
+      toast(res.flaggedAllocations.length ? `${res.flaggedAllocations.length} allocation(s) flagged for review` : 'Saved. No allocations affected.');
       loadPilots();
     } catch (err) { handleError(err); }
   };
@@ -315,7 +419,7 @@ VTS-30001,LUNA BAY,9300001,ARRIVAL,Fairway Buoy,Berth 5,INNER,${new Date(Date.no
   };
 }
 
-// ---------- metrics / audit ----------
+// ---------- metrics ----------
 async function loadMetrics() {
   const m = await api('/api/metrics');
   const cats = Object.entries(m.reallocationsAndCancellations.byCategory);
@@ -328,11 +432,66 @@ async function loadMetrics() {
   </div>`;
 }
 
+// ---------- readable audit ----------
+const FIELD = { scheduled_start: 'Start', duration_minutes: 'Duration', loa_m: 'LOA', draught_m: 'Draught', status: 'Status',
+  from_location: 'From', to_location: 'To', pilot_required: 'Pilot required' };
+function fval(k, v) {
+  if (v == null || v === '') return 'missing';
+  if (k === 'scheduled_start') return `${time(v)} UTC`;
+  if (k === 'loa_m' || k === 'draught_m') return `${v} m`;
+  if (k === 'duration_minutes') return `${v} min`;
+  return String(v);
+}
+function eventTitle(e) {
+  if (e.action === 'COMMUNICATION_STATUS') {
+    return { SENT: 'Notification recorded as sent (simulated)', ACKNOWLEDGED: 'Pilot acknowledgement recorded', DECLINED: 'Pilot decline recorded' }[e.after?.comm_status] ?? 'Communication status changed';
+  }
+  return {
+    ALLOCATION_CREATED: 'Allocation created', ALLOCATION_CONFIRMED: 'Allocation confirmed', ALLOCATION_REASSIGNED: 'Pilot reassigned',
+    ALLOCATION_CANCELLED: 'Allocation cancelled', MOVEMENT_UPDATED: 'Movement changed', ALLOCATION_FLAGGED: 'Allocation requires review',
+    ALLOCATION_REVIEWED: 'Review completed', AVAILABILITY_CHANGED: 'Pilot unavailability recorded', MOVEMENT_CREATED: 'Movement added by import',
+    IMPORT_RUN: 'Movement import run',
+  }[e.action] ?? e.action;
+}
+function eventChange(e) {
+  const b = e.before ?? {}; const a = e.after ?? {}; const d = e.details ?? {};
+  const extra = [];
+  if (d.reasonCategory) extra.push(`Category: ${d.reasonCategory.replaceAll('_', ' ').toLowerCase()}`);
+  if (d.exceptions?.length) extra.push(...d.exceptions.map((x) => `Authorised exception: ${x.message} — “${x.reason}”`));
+  if (d.warnings?.length) extra.push(...d.warnings.map((w) => `Warning acknowledged: ${w.message}`));
+  let main = '';
+  switch (e.action) {
+    case 'ALLOCATION_CREATED': main = `${a.pilot_name ?? a.pilot_id} assigned as draft`; break;
+    case 'ALLOCATION_CONFIRMED': main = `${a.pilot_name ?? 'Pilot'}: draft → confirmed`; break;
+    case 'ALLOCATION_REASSIGNED': main = `${b.pilot_name} (${(LABEL[b.status] ?? b.status).toLowerCase()}) → ${a.pilot_name} (draft)`; break;
+    case 'ALLOCATION_CANCELLED': main = `${b.pilot_name}: ${(LABEL[b.status] ?? b.status).toLowerCase()} → cancelled`; break;
+    case 'MOVEMENT_UPDATED': main = Object.keys(a).map((k) => `${FIELD[k] ?? k}: ${fval(k, b[k])} → ${fval(k, a[k])}`).join('; '); break;
+    case 'ALLOCATION_FLAGGED': return `<ul>${(d.reasons ?? []).map((r) => `<li>${esc(r)}</li>`).join('')}</ul>`;
+    case 'ALLOCATION_REVIEWED': main = 'Review flag cleared after checks re-run'; break;
+    case 'COMMUNICATION_STATUS': main = `${LABEL[b.comm_status] ?? b.comm_status} → ${LABEL[a.comm_status] ?? a.comm_status}`; break;
+    case 'AVAILABILITY_CHANGED': main = `${e.pilot_entity_name ?? e.entity_id} unavailable ${time(new Date(a.start).toISOString())}–${time(new Date(a.end).toISOString())} UTC${a.note ? ` (${a.note})` : ''}`; break;
+    case 'IMPORT_RUN': main = `${d.created} created, ${d.updated} updated, ${d.unchanged} unchanged, ${d.rejected} rejected, ${d.notInFile} not in file`; break;
+    default: main = '';
+  }
+  return [main, ...extra].filter(Boolean).map(esc).join('<br>');
+}
+function auditList(rows, showMovement) {
+  if (!rows.length) return '<p class="muted">No events yet.</p>';
+  return `<ul class="audit-list">${rows.map((e) => `<li>
+    <div class="head"><span class="ev">${esc(eventTitle(e))}</span>
+      ${showMovement && e.vessel_name ? `<span>${esc(e.vessel_name)} <span class="muted small">${esc(e.external_ref)}</span></span>` : ''}
+      <span class="muted small">${time(e.at)} UTC · ${esc(e.actor)} (${esc(e.actor_role.toLowerCase())})</span></div>
+    <div class="change">${eventChange(e)}</div>
+    ${e.reason ? `<div class="small">Reason: “${esc(e.reason)}”</div>` : ''}
+    <details class="small"><summary>Technical detail</summary><pre>${esc(JSON.stringify({ seq: e.seq, action: e.action, entity: `${e.entity_type} ${e.entity_id}`,
+      movement_id: e.movement_id, before: e.before, after: e.after, details: e.details }, null, 2))}</pre></details>
+  </li>`).join('')}</ul>`;
+}
+
 async function loadAudit() {
   const rows = await api('/api/audit');
-  $('#view-audit').innerHTML = `<p class="muted">Append-only. Latest 200 events.</p><div class="board-wrap"><table><thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Entity</th><th>Movement</th><th>Reason</th></tr></thead><tbody>
-    ${rows.map((e) => `<tr><td>${time(e.at)}</td><td>${esc(e.actor)} <span class="muted small">${esc(e.actor_role)}</span></td><td>${esc(e.action)}</td>
-      <td>${esc(e.entity_type)} ${esc(e.entity_id)}</td><td>${esc(e.movement_id ?? '')}</td><td>${esc(e.reason ?? '')}</td></tr>`).join('')}</tbody></table></div>`;
+  $('#view-audit').innerHTML = `<p class="muted">Latest 200 events, newest first. Events are added, never edited, in this prototype's database. This is a prototype record, not a production-grade or tamper-proof audit trail.</p>
+    <div class="board-wrap">${auditList(rows, true)}</div>`;
 }
 
 init().catch(handleError);

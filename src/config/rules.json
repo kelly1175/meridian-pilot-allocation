@@ -1,24 +1,54 @@
 {
-  "_status": "PROPOSED PLACEHOLDERS. Not agreed. Allocation rule authority to confirm with Susan and marine operations (see docs/open-decisions.md D-02, D-03).",
-  "operationalArea": "PORT-A",
+  "_status": "ILLUSTRATIVE SAMPLE RULES for a discovery prototype. These are NOT approved operating rules. Every value below is an assumption that requires validation with marine operations (see docs/illustrative-rules.md and docs/open-decisions.md D-02, D-03, D-12).",
+
   "boardWindowHours": 24,
-  "pilotTransitBufferMinutes": 30,
-  "minRestMinutes": 120,
-  "staleAvailabilityHours": 24,
+
+  "transitAllowanceMinutes": 30,
+  "_transitAllowanceMinutes": "Assumed travel/handover time a pilot needs either side of an assignment. Overlap inside this allowance blocks allocation (DOUBLE_BOOKED).",
+
+  "minIntervalBetweenAssignmentsMinutes": 120,
+  "_minIntervalBetweenAssignmentsMinutes": "Assumed minimum gap between one assignment ending and the next starting. A shorter gap is a warning (REST_GAP).",
+
+  "availabilityFreshnessHours": 24,
+  "_availabilityFreshnessHours": "Availability records older than this are flagged as possibly outdated (AVAILABILITY_STALE).",
+
+  "pilotClassLimits": {
+    "_note": "Assumed maximum vessel length overall (LOA) and draught per pilot class. Sample values only.",
+    "Class 1": { "maxLoaM": 400, "maxDraughtM": 16.0 },
+    "Class 2": { "maxLoaM": 250, "maxDraughtM": 12.0 },
+    "Class 3": { "maxLoaM": 180, "maxDraughtM": 9.5 },
+    "Class 4": { "maxLoaM": 120, "maxDraughtM": 7.0 }
+  },
+
+  "requiredMovementFields": {
+    "_note": "PROTOTYPE ASSUMPTION: confirmation requires the information needed to complete configured suitability checks. A missing field is never treated as zero or as a pass.",
+    "loa_m": "LOA",
+    "draught_m": "Draught"
+  },
+
+  "trainee": {
+    "_note": "PROTOTYPE ASSUMPTION requiring operational validation. No real supervision policy is modelled. Trainee assignments can be drafted but cannot be confirmed, because supervision requirements are not defined or recorded in this prototype. No role can override this.",
+    "holdConfirmationUntilSupervisionRecorded": true
+  },
+
   "features": {
     "communicationStatus": true
   },
+
   "checks": {
-    "MOVEMENT_NOT_PILOTABLE": { "severity": "BLOCK", "overridableBy": [] },
-    "PILOT_INACTIVE":         { "severity": "BLOCK", "overridableBy": [] },
-    "AREA_NOT_AUTHORISED":    { "severity": "BLOCK", "overridableBy": [] },
-    "LOA_EXCEEDS_LIMIT":      { "severity": "BLOCK", "overridableBy": [] },
-    "DRAUGHT_EXCEEDS_LIMIT":  { "severity": "BLOCK", "overridableBy": [] },
-    "PILOT_UNAVAILABLE":      { "severity": "BLOCK", "overridableBy": [] },
-    "DOUBLE_BOOKED":          { "severity": "BLOCK", "overridableBy": [] },
-    "OUTSIDE_DUTY":           { "severity": "BLOCK", "overridableBy": ["SUPERVISOR"] },
-    "REST_GAP":               { "severity": "WARN",  "overridableBy": [] },
-    "MOVEMENT_DATA_MISSING":  { "severity": "WARN",  "overridableBy": [] },
-    "AVAILABILITY_STALE":     { "severity": "WARN",  "overridableBy": [] }
+    "_note": "severity: BLOCK = cannot allocate; CONFIRM_HOLD = draft allowed, confirmation prevented; WARN = allocator must acknowledge. overridableBy lists roles that may authorise an exception (BLOCK only). Area authorisations and duty periods are sample data in src/seed.js.",
+    "MOVEMENT_NOT_PILOTABLE":   { "severity": "BLOCK",        "overridableBy": [],             "label": "Movement cancelled or no pilot required" },
+    "PILOT_INACTIVE":           { "severity": "BLOCK",        "overridableBy": [],             "label": "Pilot inactive" },
+    "AREA_NOT_AUTHORISED":      { "severity": "BLOCK",        "overridableBy": [],             "label": "Area authorisation" },
+    "CLASS_LIMITS_UNKNOWN":     { "severity": "CONFIRM_HOLD", "overridableBy": [],             "label": "No configured limits for pilot class" },
+    "LOA_EXCEEDS_LIMIT":        { "severity": "BLOCK",        "overridableBy": [],             "label": "Vessel length limit" },
+    "DRAUGHT_EXCEEDS_LIMIT":    { "severity": "BLOCK",        "overridableBy": [],             "label": "Draught limit" },
+    "PILOT_UNAVAILABLE":        { "severity": "BLOCK",        "overridableBy": [],             "label": "Recorded unavailability" },
+    "DOUBLE_BOOKED":            { "severity": "BLOCK",        "overridableBy": [],             "label": "Conflicts with another assignment" },
+    "OUTSIDE_DUTY":             { "severity": "BLOCK",        "overridableBy": ["SUPERVISOR"], "label": "Duty period" },
+    "MOVEMENT_DATA_MISSING":    { "severity": "CONFIRM_HOLD", "overridableBy": [],             "label": "Required movement information missing" },
+    "TRAINEE_SUPERVISION":      { "severity": "CONFIRM_HOLD", "overridableBy": [],             "label": "Trainee supervision not recorded" },
+    "REST_GAP":                 { "severity": "WARN",         "overridableBy": [],             "label": "Short interval between assignments" },
+    "AVAILABILITY_STALE":       { "severity": "WARN",         "overridableBy": [],             "label": "Availability may be outdated" }
   }
 }

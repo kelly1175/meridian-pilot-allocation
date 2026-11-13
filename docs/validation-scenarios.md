@@ -10,16 +10,16 @@ For each scenario, record: completed (yes/no), time taken, hesitation points, ru
 
 1. Tick **Unresolved only**.
 2. Pick the earliest unallocated movement.
-3. Review the candidates. Assign an eligible pilot and tick **Confirm immediately**.
+3. Review the candidates. Assign a pilot marked **Passes configured checks** and tick **Confirm immediately**.
 
 **Expect:** the status changes to Confirmed. The history shows creation and confirmation.
-**Ask:** Is the information shown enough to choose? What's missing? Does the eligible / warnings / blocked split match how you decide today?
+**Ask:** Is the information shown enough to choose? What's missing? Does the passes / warnings / draft only / blocked split match how you decide today?
 
 ## S2 Late change to a confirmed movement
 
 **As:** Sam (Supervisor) simulates the source change, then Alex resolves it
 
-1. Sam: open **CAPE HALLORAN**, then **Simulate time change**, and move it later.
+1. Sam: open **CAPE HALLORAN**, click **Edit sample movement**, then **+4 h**, then **Apply change**.
 2. Alex: refresh. The movement shows **Needs review** with the before → after time.
 3. If the pilot is still suitable, **Mark reviewed**. If not, **Reallocate** with category *Movement change*.
 
@@ -33,7 +33,7 @@ For each scenario, record: completed (yes/no), time taken, hesitation points, ru
 1. **Pilot availability**: record unavailability for **Pilot Carrick** covering their next assignment.
 2. The toast reports how many allocations were flagged.
 3. **Movement board**: open the flagged movement. **Mark reviewed** is refused because the pilot now fails checks.
-4. Reallocate to an eligible pilot with category *Pilot unavailable*.
+4. Reallocate to a pilot who passes configured checks, with category *Pilot unavailable*.
 
 **Expect:** the old allocation shows as superseded and linked. The reason is recorded.
 
@@ -48,7 +48,7 @@ For each scenario, record: completed (yes/no), time taken, hesitation points, ru
 
 ## S5 Authorised exception
 
-1. Alex: open a movement where a pilot shows **Exception needed** (outside duty). The Assign button is available but the server refuses an allocator.
+1. Alex: open a movement where a pilot shows **Blocked** with "(exception: supervisor)". Alex can't assign them.
 2. Sam: assign the same pilot with an exception reason.
 
 **Expect:** the exception and reason are shown on the allocation and counted in Metrics.
